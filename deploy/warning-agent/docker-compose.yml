@@ -1,0 +1,77 @@
+name: warning-agent
+
+services:
+  agent-gateway:
+    build:
+      context: ../../services/agent-gateway
+      dockerfile: Dockerfile
+    image: ${AGENT_GATEWAY_IMAGE:-warning-agent/agent-gateway:local}
+    restart: unless-stopped
+    environment:
+      AGENT_GATEWAY_PORT: "8080"
+      AGENT_GATEWAY_RUNTIME_BASE_URL: http://warning-agent-runtime:8090
+      AGENT_GATEWAY_WARNING_CENTER_CALLBACK_URL: ${AGENT_GATEWAY_WARNING_CENTER_CALLBACK_URL:?required}
+      AGENT_GATEWAY_WARNING_CENTER_TOKEN: ${AGENT_GATEWAY_WARNING_CENTER_TOKEN:?required}
+      WARNING_AGENT_SHARED_SECRET: ${WARNING_AGENT_SHARED_SECRET:?required}
+      AGENT_GATEWAY_MAX_REQUEST_BYTES: ${AGENT_GATEWAY_MAX_REQUEST_BYTES:-262144}
+      AGENT_GATEWAY_MAX_CONCURRENT_REQUESTS: ${AGENT_GATEWAY_MAX_CONCURRENT_REQUESTS:-64}
+    ports:
+      - "${AGENT_GATEWAY_PUBLISHED_PORT:-8080}:8080"
+    depends_on:
+      warning-agent-runtime:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+    networks:
+      - warning-agent-internal
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+
+  warning-agent-runtime:
+    build:
+      context: ../..
+      dockerfile: deploy/warning-agent/Dockerfile.runtime
+    image: ${WARNING_AGENT_RUNTIME_IMAGE:-warning-agent/runtime:local}
+    restart: unless-stopped
+    environment:
+      WARNING_AGENT_HOST: 0.0.0.0
+      WARNING_AGENT_PORT: "8090"
+      WARNING_AGENT_SHARED_SECRET: ${WARNING_AGENT_SHARED_SECRET:?required}
+      WARNING_AGENT_GATEWAY_CALLBACK_URL: http://agent-gateway:8080/internal/agent-gateway/v1/task-events
+      WARNING_AGENT_CALLBACK_RETRY_ATTEMPTS: ${WARNING_AGENT_CALLBACK_RETRY_ATTEMPTS:-3}
+      WARNING_AGENT_CALLBACK_RETRY_BACKOFF_MS: ${WARNING_AGENT_CALLBACK_RETRY_BACKOFF_MS:-250}
+      WARNING_AGENT_SESSION_DIR: /var/lib/warning-agent/sessions
+      WARNING_AGENT_MAX_CONCURRENT_TASKS: ${WARNING_AGENT_MAX_CONCURRENT_TASKS:-4}
+      WARNING_AGENT_TASK_TIMEOUT_MS: ${WARNING_AGENT_TASK_TIMEOUT_MS:-600000}
+      WARNING_AGENT_RETENTION_MS: ${WARNING_AGENT_RETENTION_MS:-604800000}
+    volumes:
+      - warning-agent-sessions:/var/lib/warning-agent/sessions
+    expose:
+      - "8090"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    networks:
+      - warning-agent-internal
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+volumes:
+  warning-agent-sessions:
+
+networks:
+  warning-agent-internal:
+    driver: bridge

@@ -1,0 +1,33 @@
+server:
+  port: ${AGENT_GATEWAY_PORT:8080}
+  shutdown: graceful
+  max-http-request-header-size: 16KB
+
+spring:
+  application:
+    name: agent-gateway
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+agent-gateway:
+  runtime-base-url: ${AGENT_GATEWAY_RUNTIME_BASE_URL:http://warning-agent-runtime:8090}
+  warning-center-callback-url: ${AGENT_GATEWAY_WARNING_CENTER_CALLBACK_URL:http://warning-center:8080/internal/v1/warning-agent/task-events}
+  warning-center-token: ${AGENT_GATEWAY_WARNING_CENTER_TOKEN:}
+  shared-secret: ${WARNING_AGENT_SHARED_SECRET:}
+  max-request-bytes: ${AGENT_GATEWAY_MAX_REQUEST_BYTES:262144}
+  max-concurrent-requests: ${AGENT_GATEWAY_MAX_CONCURRENT_REQUESTS:64}
+  retry-after-seconds: ${AGENT_GATEWAY_RETRY_AFTER_SECONDS:5}
+  connect-timeout: ${AGENT_GATEWAY_CONNECT_TIMEOUT:3s}
+  request-timeout: ${AGENT_GATEWAY_REQUEST_TIMEOUT:30s}
+  signature-window: ${AGENT_GATEWAY_SIGNATURE_WINDOW:5m}
+  nonce-ttl: ${AGENT_GATEWAY_NONCE_TTL:5m}

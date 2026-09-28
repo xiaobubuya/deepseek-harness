@@ -1,0 +1,18 @@
+FROM node:22.22.0-bookworm-slim
+
+WORKDIR /opt/deepseek-harness
+
+RUN corepack enable && corepack prepare pnpm@11.7.0 --activate \
+    && groupadd --system --gid 10001 warning-agent \
+    && useradd --system --uid 10001 --gid warning-agent --home-dir /var/lib/warning-agent warning-agent
+
+COPY --chown=warning-agent:warning-agent . .
+RUN pnpm install --frozen-lockfile
+
+USER warning-agent
+ENV NODE_ENV=production \
+    DSH_HOME=/var/lib/warning-agent/.dsh
+
+EXPOSE 8090
+VOLUME ["/var/lib/warning-agent/sessions"]
+ENTRYPOINT ["pnpm", "dsh", "--profile", "warning-agent"]

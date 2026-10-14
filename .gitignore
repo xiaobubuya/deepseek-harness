@@ -5,6 +5,10 @@ apps/desktop/.env.macos
 apps/desktop/*.p12
 node_modules/
 lib/
+# Compiler output landing beside vendored sources; their builds emit to lib/.
+vendor/*/src/**/*.js
+vendor/*/src/**/*.d.ts
+vendor/*/src/**/*.map
 *.tsbuildinfo
 pnpm-debug.log
 .pnpm-store/

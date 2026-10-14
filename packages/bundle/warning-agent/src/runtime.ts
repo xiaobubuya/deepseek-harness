@@ -18,6 +18,11 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionSeq, type Session, type SessionEvent, type SessionId, type SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
+import {
+  createWarningDataCoreFromEnvironment,
+  registerWarningAgentTools,
+} from '@deepseek-ai/dsh-warning-agent-tools'
+import type { WarningDataCore, WarningDataRequestContext } from '@deepseek-ai/dsh-warning-data-core'
 
 const DELIVERY_PATH = '/internal/warning-agent/v1/deliveries'
 const MAX_BODY_BYTES = 256 * 1024
@@ -486,7 +491,7 @@ export class WarningAgentRuntime {
 }
 
 class HarnessTaskExecutor implements TaskExecutor {
-  constructor(private readonly ctx: Context) {}
+  constructor(private readonly ctx: Context, private readonly dataCore: WarningDataCore) {}
 
   async execute(task: RuntimeTask, signal: AbortSignal): Promise<TaskExecutionResult> {
     await this.ctx.get('loader')?.await()
@@ -504,6 +509,10 @@ class HarnessTaskExecutor implements TaskExecutor {
     const setup = (agentCtx: Context): void => {
       const selected: ModelSelectionRef = { current: selection, assembled: undefined }
       installModelSelection(agentCtx, selected)
+      registerWarningAgentTools(agentCtx, {
+        core: this.dataCore,
+        requestContext: warningDataRequestContext(task),
+      }, task.delivery.allowedTools)
     }
     let handle: AgentHandle | undefined
     let cancelAgent = (): void => {}
@@ -586,12 +595,38 @@ function summarizeAgentRun(
 
 /** Install the Runtime server as a Cordis plugin with disposal ownership. */
 export function apply(ctx: Context, config: Config): void {
-  const runtime = new WarningAgentRuntime(config, Date.now, new HarnessTaskExecutor(ctx))
+  const configuredCore = ctx.get('warningDataCore') as WarningDataCore | undefined
+  const dataCore = configuredCore ?? createWarningDataCoreFromEnvironment()
+  ctx.provide('warningDataCore', dataCore)
+  const runtime = new WarningAgentRuntime(config, Date.now, new HarnessTaskExecutor(ctx, dataCore))
   ctx.provide('warningAgentRuntime', runtime)
   ctx.effect(() => {
     void runtime.listen().catch(() => undefined)
     return () => { void runtime.close() }
   })
+}
+
+function warningDataRequestContext(task: RuntimeTask): Omit<WarningDataRequestContext, 'signal'> {
+  const deliveryContext = task.delivery.context
+  const value = (key: string): string | undefined => {
+    const candidate = deliveryContext[key]
+    return typeof candidate === 'string' && candidate.trim() !== '' ? candidate : undefined
+  }
+  const metadata: Record<string, string> = {}
+  for (const [key, candidate] of Object.entries(deliveryContext)) {
+    if (typeof candidate === 'string' && candidate.length <= 512) metadata[key] = candidate
+  }
+  const tenantId = value('tenantId')
+  const actor = value('actor')
+  return {
+    taskId: task.delivery.taskId,
+    traceId: value('traceId') ?? `${task.workflowId}:${String(task.delivery.revision)}`,
+    ...(tenantId === undefined ? {} : { tenantId }),
+    ...(actor === undefined ? {} : { actor }),
+    deadlineAt: task.delivery.deadlineAt,
+    ...(task.delivery.actionGrant === undefined ? {} : { actionGrant: task.delivery.actionGrant }),
+    metadata,
+  }
 }
 
 async function readBody(request: IncomingMessage): Promise<string> {

@@ -13,6 +13,8 @@
     {"path": "../../core/agent"},
     {"path": "../../core/agent-default-model"},
     {"path": "../../llm/llm"},
+    {"path": "../../warning/agent-tools"},
+    {"path": "../../warning/data-core"},
     {"path": "../../core/session"},
     {"path": "../../session/session-persistence"}
   ]

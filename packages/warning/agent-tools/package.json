@@ -1,0 +1,39 @@
+{
+  "name": "@deepseek-ai/dsh-warning-agent-tools",
+  "description": "Harness Agent Tools backed by the warning data adapters",
+  "version": "0.1.7-rc.2",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "packages/warning/agent-tools"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "lib/types/**/*.d.ts"],
+  "license": "MIT",
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "workspace:*",
+    "@deepseek-ai/dsh-util-values": "workspace:*",
+    "@deepseek-ai/dsh-warning-data-core": "workspace:*",
+    "@deepseek-ai/dsh-warning-doris-adapter": "workspace:*",
+    "@deepseek-ai/dsh-warning-lps-adapter": "workspace:*",
+    "@deepseek-ai/dsh-warning-ntsdb-adapter": "workspace:*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:*",
+    "vitest": "^4.1.8"
+  }
+}

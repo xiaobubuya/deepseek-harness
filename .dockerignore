@@ -1,0 +1,17 @@
+.git
+.github
+.idea
+.agents
+.claude
+node_modules
+**/node_modules
+target
+**/target
+dist
+**/dist
+coverage
+**/coverage
+.turbo
+*.tsbuildinfo
+*.log
+deploy/warning-agent/.env

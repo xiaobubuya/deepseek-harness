@@ -1,0 +1,36 @@
+{
+  "name": "@deepseek-ai/dsh-warning-doris-adapter",
+  "description": "Controlled Doris read adapter for the warning center",
+  "version": "0.1.7-rc.2",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "packages/warning/doris-adapter"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-warning-data-core": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.8"
+  }
+}

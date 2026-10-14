@@ -7,7 +7,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Use `dsh --profile warning-agent` for the controlled Runtime used by the early-warning hub. The profile keeps the Agent and workflow kernel, starts the internal Runtime ingress, and disables shell, filesystem, web, dynamic skill, and open-ended subagent capabilities. Runtime admission requires an HMAC signature from Agent Gateway; the process does not hold production data-source credentials.
+Use `dsh --profile warning-agent` for the controlled Runtime used by the early-warning hub. The profile keeps the Agent and workflow kernel, starts the internal Runtime ingress, and disables shell, filesystem, web, dynamic skill, and open-ended subagent capabilities. Runtime admission requires an HMAC signature from Agent Gateway. The Runtime holds only explicitly injected read-only data-source credentials for its registered warning tools; credentials never enter prompts or task context.
 
 ## Runtime configuration
 
@@ -27,7 +27,7 @@ Use `dsh --profile warning-agent` for the controlled Runtime used by the early-w
 
 The Runtime exposes `/health`, `/ready`, `POST /internal/warning-agent/v1/deliveries`, and the task cancellation endpoint. A delivery is deduplicated by `taskId + revision + attempt`; attempts for one revision share a deterministic Session id and have distinct workflow ids. Runtime lifecycle projections are appended to JSONL files on the mounted volume and progress/results are sent only to the configured Gateway URL.
 
-The current MVP intentionally excludes domain query and POPO plugins. They will be added after the Gateway/Runtime protocol and deployment baseline are integrated.
+The current MVP includes read-only LPS, Doris, and NTSDB tools. Decision-result, Sentinel write actions, and POPO team plugins remain excluded.
 
 ## Source map
 
@@ -39,4 +39,4 @@ The current MVP intentionally excludes domain query and POPO plugins. They will 
 
 ## Limitations
 
-This profile is an internal service runtime, not a general-purpose coding agent. It does not execute system changes or access data sources directly. Warning Center remains the durable task and final-result authority; Runtime JSONL files are a local, recoverable execution projection and Gateway stays stateless.
+This profile is an internal service runtime, not a general-purpose coding agent. It does not execute system changes or expose arbitrary network, filesystem, or write operations. Warning Center remains the durable task and final-result authority; Runtime JSONL files are a local, recoverable execution projection and Gateway stays stateless.

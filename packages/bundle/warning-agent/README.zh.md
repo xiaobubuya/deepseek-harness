@@ -7,7 +7,7 @@ kind: "package-bundle"
 
 ## 概述
 
-使用 `dsh --profile warning-agent` 启动预警中枢使用的受控 Runtime。该 profile 保留 Agent 与 workflow 核心，启动内部 Runtime 接入，并禁用 shell、filesystem、Web、动态 skill 和开放式 subagent 能力。Runtime 接入要求 Agent Gateway 提供 HMAC 签名，进程不持有生产数据源凭据。
+使用 `dsh --profile warning-agent` 启动预警中枢使用的受控 Runtime。该 profile 保留 Agent 与 workflow 核心，启动内部 Runtime 接入，并禁用 shell、filesystem、Web、动态 skill 和开放式 subagent 能力。Runtime 接入要求 Agent Gateway 提供 HMAC 签名。Runtime 只持有通过部署环境注入的只读数据源凭据，用于已注册的预警工具；凭据不会进入 Prompt 或任务上下文。
 
 ## Runtime 配置
 
@@ -27,8 +27,8 @@ kind: "package-bundle"
 
 Runtime 提供 `/health`、`/ready`、`POST /internal/warning-agent/v1/deliveries` 和任务取消接口。投递按 `taskId + revision + attempt` 去重；同一 revision 的 attempt 共享确定性 Session ID，并使用不同的 workflow ID。执行生命周期以 JSONL 追加写入挂载卷，进度和结果只回调到固定配置的 Gateway 地址。
 
-当前 MVP 暂不包含领域查询和 POPO 插件，待 Gateway/Runtime 协议与部署基线联调完成后再开发。
+当前 MVP 已包含只读 LPS、Doris、NTSDB 工具；决策结果、哨兵写操作和 POPO 群组插件暂不包含。
 
 ## 限制
 
-该 profile 是内部服务 Runtime，不是通用 coding agent。它不执行系统变更，也不直接访问数据源。Warning Center 是任务和最终结果的持久化事实源；Runtime JSONL 只是可恢复的本地执行投影，Gateway 保持无状态。
+该 profile 是内部服务 Runtime，不是通用 coding agent。它不执行系统变更，也不开放任意网络、文件系统或写操作。Warning Center 是任务和最终结果的持久化事实源；Runtime JSONL 只是可恢复的本地执行投影，Gateway 保持无状态。

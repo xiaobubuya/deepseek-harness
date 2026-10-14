@@ -16,6 +16,11 @@ Warning Center calls require `X-Internal-Token`. Runtime requests and callbacks 
 
 ## Local verification
 
+The module is outside the pnpm workspace, so the root scripts forward to Maven:
+
 ```sh
-mvn test
+pnpm run gateway:test    # mvn test in this module
+pnpm run gateway:build   # mvn package in this module
 ```
+
+`.github/workflows/agent-gateway.yml` runs Maven `verify` on pull requests that touch this directory.

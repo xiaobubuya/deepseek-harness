@@ -70,6 +70,7 @@ packages/    @deepseek-ai/dsh-<pkg> workspaces at packages/<group>/<pkg>/
   util/                 zero-dependency utilities
 python/      Python SDK/runtime (python/README.md)
 native/      @deepseek-ai/node-addon-system source (native/README.md)
+services/    Non-TypeScript service modules outside the pnpm workspace
 benchmarks/  performance gates
 .agents/     Agent workflows/notes
 docs/        Documentation (docs/AGENTS.md)
@@ -101,7 +102,7 @@ pnpm run test:docs      # quick documentation checks (no build; doc-quick aggreg
 pnpm run website:build  # VitePress build (doubles as dead-link check)
 pnpm dsh --profile headless "task"  # run one task from source (needs DEEPSEEK_API_KEY)
 pnpm run demo:ptc -- "task"  # headless PTC mode run (needs key)
-pnpm run dev:web | dev:desktop  # build, then launch; Web also rebuilds client bundles on edits. start:web | start:desktop skip the build
+pnpm run dev:web | dev:desktop  # build then launch (docs/development.md)
 make web|dev-web|desktop|dev-desktop|build  # the same commands; ARGS='--no-open' forwards options
 ```
 

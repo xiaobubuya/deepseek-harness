@@ -1,0 +1,46 @@
+# Java service gate. services/agent-gateway sits outside the pnpm workspace and
+# outside every TypeScript program, so ci.yml cannot reach it: without this
+# workflow a broken Gateway compiles and ships with no red signal. A separate
+# workflow rather than a ci.yml job because the axis is the JVM toolchain, not
+# node, and the path filter keeps TypeScript pull requests from paying for it.
+name: Agent Gateway
+
+on:
+  pull_request:
+    paths:
+      - 'services/agent-gateway/**'
+      - '.github/workflows/agent-gateway.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'services/agent-gateway/**'
+      - '.github/workflows/agent-gateway.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gateway:
+    name: maven verify
+    runs-on: >-
+      ${{ vars.DSH_CI_FAILOVER_LINUX == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404'
+          || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      # Java 21 matches java.version in the module's pom and the build stage of
+      # its Dockerfile; the gateway is not built anywhere else in CI.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: services/agent-gateway/pom.xml
+
+      - name: Maven verify
+        run: mvn -B --no-transfer-progress -f services/agent-gateway/pom.xml verify

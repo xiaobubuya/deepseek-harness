@@ -46,3 +46,5 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 native/system/test/bin/
+# Maven build output for the Java service modules under services/.
+services/**/target/

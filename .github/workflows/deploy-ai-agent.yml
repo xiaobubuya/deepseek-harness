@@ -2,9 +2,10 @@ name: Deploy AI Agent Server
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
       - 'apps/ai-agent-server/**'
+      - '.github/workflows/deploy-ai-agent.yml'
   workflow_dispatch:
     inputs:
       deploy:

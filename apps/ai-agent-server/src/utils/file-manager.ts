@@ -1,4 +1,5 @@
-import fs from 'fs/promises';
+import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 import { config } from '../config.js';
 import { logger } from './logger.js';
@@ -30,7 +31,7 @@ export async function initStorage(): Promise<void> {
 
   for (const dir of dirs) {
     if (!fs.existsSync(dir)) {
-      await fs.mkdir(dir, { recursive: true });
+      await fsp.mkdir(dir, { recursive: true });
       logger.info(`Created directory: ${dir}`);
     }
   }
@@ -49,8 +50,8 @@ export async function saveUploadFile(originalName: string, filePath: string): Pr
   const newFilename = `${fileId}${ext}`;
   const destPath = path.join(config.uploadDir, newFilename);
 
-  await fs.copyFile(filePath, destPath);
-  await fs.unlink(filePath);
+  await fsp.copyFile(filePath, destPath);
+  await fsp.unlink(filePath);
 
   logger.info(`File uploaded: ${newFilename}`);
   return newFilename;
@@ -75,14 +76,14 @@ export function getProcessedPath(filename: string): string {
  */
 export async function listImages(): Promise<{ filename: string; size: number; createdAt: string }[]> {
   try {
-    const files = await fs.readdir(config.uploadDir);
+    const files = await fsp.readdir(config.uploadDir);
     const images: { filename: string; size: number; createdAt: string }[] = [];
 
     for (const file of files) {
       const ext = path.extname(file).toLowerCase();
       if (ALLOWED_EXTENSIONS.has(ext)) {
         const filePath = path.join(config.uploadDir, file);
-        const stats = await fs.stat(filePath);
+        const stats = await fsp.stat(filePath);
         images.push({
           filename: file,
           size: stats.size,
@@ -107,12 +108,12 @@ export async function cleanupOldFiles(): Promise<void> {
 
   for (const dir of dirs) {
     try {
-      const files = await fs.readdir(dir);
+      const files = await fsp.readdir(dir);
       for (const file of files) {
         const filePath = path.join(dir, file);
-        const stats = await fs.stat(filePath);
+        const stats = await fsp.stat(filePath);
         if (stats.mtimeMs < cutoff) {
-          await fs.unlink(filePath);
+          await fsp.unlink(filePath);
           logger.info(`Cleaned up old file: ${file}`);
         }
       }

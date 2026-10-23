@@ -99,14 +99,11 @@ export async function sendToClient(clientId: string, message: unknown): Promise<
   }
 }
 
-/**
- * 广播消息到所有客户端
- */
-export async function broadcast(message: unknown): Promise<void> {
-  const json = JSON.stringify(message);
-  for (const ws of clients.values()) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(json);
-    }
-  }
-}
+export const websocketManager = {
+  createWebSocketServer,
+  getConnections,
+  sendToClient,
+  broadcast,
+};
+
+export default websocketManager;

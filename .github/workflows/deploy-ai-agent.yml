@@ -101,13 +101,21 @@ jobs:
             mkdir -p uploads processed thumbnails logs temp
 
             # 配置环境变量
-            cat > .env << 'EOF'
+            LLM_API_URL=${{ secrets.LLM_API_URL }}
+            if [ -z "$LLM_API_URL" ]; then
+                LLM_API_URL="https://token.sensenova.cn/v1"
+            fi
+            LLM_MODEL=${{ secrets.LLM_MODEL }}
+            if [ -z "$LLM_MODEL" ]; then
+                LLM_MODEL="sensenova-6.8-flash-lite"
+            fi
+            cat > .env << EOF
             PORT=3000
             NODE_ENV=production
             API_KEY=*** secrets.API_KEY }}
-            LLM_API_URL=https://token.sensenova.cn/v1
+            LLM_API_URL=$LLM_API_URL
             LLM_API_KEY=*** secrets.LLM_API_KEY }}
-            LLM_MODEL=sensenova-6.8-flash-lite
+            LLM_MODEL=$LLM_MODEL
             UPLOAD_DIR=/opt/ai-agent-server/uploads
             PROCESSED_DIR=/opt/ai-agent-server/processed
             THUMBNAIL_DIR=/opt/ai-agent-server/thumbnails

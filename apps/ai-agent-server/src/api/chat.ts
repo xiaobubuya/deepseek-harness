@@ -1,0 +1,126 @@
+import { Router, Request, Response } from 'express';
+import { config } from '../config.js';
+import { parseInstruction } from '../core/llm-parser.js';
+import { executeCommands, validateCommand } from '../core/cli-executor.js';
+import { getImagePath } from '../utils/file-manager.js';
+import { logger } from '../utils/logger.js';
+import { websocketManager } from '../websocket/manager.js';
+
+const chat = Router();
+
+/**
+ * POST /api/chat - 接收用户指令
+ */
+chat.post('/', async (req: Request, res: Response) => {
+  const { message, imageId, imageFilename } = req.body;
+
+  if (!message) {
+    res.status(400).json({ error: '缺少 message 字段' });
+    return;
+  }
+
+  if (!imageId && !imageFilename) {
+    res.status(400).json({ error: '缺少 imageId 或 imageFilename' });
+    return;
+  }
+
+  const taskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const ws = websocketManager.getConnections().get(taskId);
+
+  // 异步执行，立即返回 taskId
+  (async () => {
+    try {
+      if (ws) {
+        await ws.send(JSON.stringify({ type: 'ack', taskId }));
+      }
+
+      // 解析指令
+      if (ws) {
+        await ws.send(JSON.stringify({ type: 'thinking', thought: '正在分析您的指令...' }));
+      }
+
+      const result = await parseInstruction(message, async (thought) => {
+        if (ws) {
+          await ws.send(JSON.stringify({ type: 'thinking', thought }));
+        }
+      });
+
+      if (ws) {
+        await ws.send(
+          JSON.stringify({
+            type: 'command',
+            command: result.commands.map((c) => c.cmd).join(', '),
+            params: result.commands,
+            explanation: result.explanation,
+          })
+        );
+      }
+
+      // 验证命令
+      for (const cmd of result.commands) {
+        const error = validateCommand(cmd.cmd, cmd.params);
+        if (error) {
+          if (ws) {
+            await ws.send(JSON.stringify({ type: 'error', code: 'INVALID_COMMAND', message: error }));
+          }
+          return;
+        }
+      }
+
+      // 执行命令
+      const imagePath = imageFilename ? getImagePath(imageFilename) : getImagePath(imageId || '');
+
+      const executionResult = await executeCommands(result.commands, imagePath, {
+        onProgress: async (progress) => {
+          if (ws) {
+            await ws.send(JSON.stringify({ type: 'progress', ...progress }));
+          }
+        },
+        onLog: async (log) => {
+          if (ws) {
+            await ws.send(JSON.stringify({ type: 'log', level: 'info', message: log }));
+          }
+        },
+      });
+
+      if (executionResult.status === 'success') {
+        if (ws) {
+          await ws.send(
+            JSON.stringify({
+              type: 'done',
+              resultUrl: `/processed/${executionResult.outputPath.split('/').pop()}`,
+              commands: result.commands.map((c) => c.cmd),
+              explanation: result.explanation,
+            })
+          );
+        }
+        logger.info(`Task ${taskId} completed successfully`);
+      } else {
+        if (ws) {
+          await ws.send(
+            JSON.stringify({ type: 'error', code: 'EXECUTION_ERROR', message: executionResult.error })
+          );
+        }
+        logger.error(`Task ${taskId} failed: ${executionResult.error}`);
+      }
+    } catch (error: unknown) {
+      const err = error as Error;
+      if (ws) {
+        await ws.send(JSON.stringify({ type: 'error', code: 'INTERNAL_ERROR', message: err.message }));
+      }
+      logger.error(`Task ${taskId} error: ${err.message}`, err);
+    }
+  })();
+
+  res.json({ taskId, status: 'accepted' });
+});
+
+/**
+ * GET /api/chat/status/:taskId - 查询任务状态
+ */
+chat.get('/status/:taskId', (req: Request, res: Response) => {
+  const { taskId } = req.params;
+  res.json({ taskId, status: 'running' });
+});
+
+export { chat };

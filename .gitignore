@@ -47,3 +47,15 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 native/system/test/bin/
+
+# AI Agent Server
+apps/ai-agent-server/node_modules/
+apps/ai-agent-server/dist/
+apps/ai-agent-server/dist-package/
+apps/ai-agent-server/ai-agent-server.tar.gz
+apps/ai-agent-server/.env
+apps/ai-agent-server/uploads/
+apps/ai-agent-server/processed/
+apps/ai-agent-server/thumbnails/
+apps/ai-agent-server/logs/
+apps/ai-agent-server/temp/

@@ -286,8 +286,7 @@ app.use('/api', async (req, res, next) => {
 app.get('/api/vault', async (req, res) => {
   await initVault({});
   const result = await listVaultSecrets({}, req, res);
-  if (result) return result;
-  next();
+  res.json(result);
 });
 
 // AI Agent routes

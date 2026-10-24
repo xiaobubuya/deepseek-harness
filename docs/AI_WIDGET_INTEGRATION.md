@@ -113,16 +113,22 @@ window.lightcraft = {
 #### 2.2.2 AI 组件调用流程
 
 ```
-用户操作流程：
+用户操作流程（自动应用方案）：
 1. 在编辑器打开图片
-2. 点击 AI 组件
-3. AI 组件自动获取编辑器图片
+2. 点击 AI 组件 → 自动检测编辑器类型
+3. AI 组件自动获取编辑器图片并上传到服务器
 4. 用户输入指令
 5. AI 组件发送指令 + 图片
 6. 服务器处理并返回结果
-7. AI 组件将结果返回给编辑器
-8. 编辑器显示处理后的图片
+7. AI 组件自动将结果应用回编辑器（实时替换）
+8. 编辑器显示处理后的图片（无需手动操作）
 ```
+
+**自动应用优势**：
+- 符合实时编辑器的用户体验
+- 减少操作步骤
+- 即时反馈处理结果
+- 支持撤销（编辑器本身的撤销功能）
 
 ### 2.3 通信协议
 
@@ -183,88 +189,154 @@ window.addEventListener('message', (e) => {
 
 #### 步骤 1：编辑器添加集成接口
 
-**PhotoCraft**：
+**PhotoCraft** (`photocraft/index.html`)：
 ```javascript
-// 在 index.html 添加
+// 暴露 WASM bindings
+window.wasmBindings = bindings;
+window.wasm = wasm;
+
+// PhotoCraft 集成 API（基于 Canvas）
 window.photocraft = {
   hasImage: () => {
-    // 检查 canvas 是否有内容
     const canvas = document.getElementById('photocraft_canvas');
-    return canvas.width > 0 && canvas.height > 0;
+    if (!canvas) return false;
+    try { canvas.toDataURL(); return true; } catch (e) { return false; }
   },
-  
+
   getImage: () => {
     const canvas = document.getElementById('photocraft_canvas');
-    return canvas.toDataURL('image/png');
+    if (!canvas) return null;
+    try { return canvas.toDataURL('image/png'); } catch (e) { return null; }
   },
-  
+
+  getImageBlob: () => {
+    return new Promise((resolve) => {
+      const canvas = document.getElementById('photocraft_canvas');
+      if (!canvas) { resolve(null); return; }
+      canvas.toBlob(resolve, 'image/png');
+    });
+  },
+
   setImage: (dataUrl) => {
-    // 需要调用 WASM API 设置图片
-    // TODO: 需要查看 WASM API
-  }
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.getElementById('photocraft_canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        resolve(true);
+      };
+      img.onerror = (e) => reject(e);
+      img.src = dataUrl;
+    });
+  },
+
+  getInfo: () => ({
+    type: 'photocraft',
+    hasImage: window.photocraft.hasImage(),
+    canvasSize: {
+      width: document.getElementById('photocraft_canvas')?.width || 0,
+      height: document.getElementById('photocraft_canvas')?.height || 0
+    }
+  })
 };
 ```
 
-**LightCraft**：
+**LightCraft** (`lightcraft/index.html`)：
 ```javascript
-// LightCraft 已经有 command API
-// 需要查看如何获取/设置图片
+// LightCraft 集成 API（同 PhotoCraft，基于 Canvas）
+window.lightcraft = {
+  command,  // 原有的 command API
+  hasImage: () => { /* 同 PhotoCraft */ },
+  getImage: () => { /* 同 PhotoCraft */ },
+  getImageBlob: () => { /* 同 PhotoCraft */ },
+  setImage: (dataUrl) => { /* 同 PhotoCraft */ },
+  getInfo: () => { /* 同 PhotoCraft */ }
+};
 ```
 
 #### 步骤 2：AI 组件添加集成逻辑
 
+**ai-widget.js** 关键功能：
+
 ```javascript
-// ai-widget.js 添加
-function getEditorImage() {
-  // 尝试获取 PhotoCraft 图片
-  if (window.photocraft && window.photocraft.hasImage()) {
-    return window.photocraft.getImage();
-  }
-  
-  // 尝试获取 LightCraft 图片
-  if (window.lightcraft && window.lightcraft.hasImage()) {
-    return window.lightcraft.getImage();
-  }
-  
+// 1. 编辑器检测
+function detectEditor() {
+  if (window.photocraft?.hasImage) return 'PhotoCraft';
+  if (window.lightcraft?.hasImage) return 'LightCraft';
   return null;
 }
 
-// 修改 uploadFile 函数
-async function uploadFile(file) {
-  // 先尝试从编辑器获取图片
-  const editorImage = getEditorImage();
-  if (editorImage) {
-    // 使用编辑器图片
-    return processEditorImage(editorImage);
+// 2. 自动获取编辑器图片
+async function autoLoadEditorImage() {
+  const dataUrl = await getEditorImage();
+  if (!dataUrl) {
+    addMsg('system', '⚠️ 无法获取图片，请手动上传');
+    return;
+  }
+  addMsg('system', '📷 已从 ' + editorType + ' 获取图片...');
+  
+  // 转换为 Blob 并上传
+  const blob = await (await fetch(dataUrl)).blob();
+  const file = new File([blob], 'editor_image.png', { type: 'image/png' });
+  await uploadFile(file);
+}
+
+// 3. 自动应用结果到编辑器
+async function sendResultToEditor(resultUrl) {
+  const res = await fetch(resultUrl);
+  const blob = await res.blob();
+  const reader = new FileReader();
+  
+  return new Promise((resolve) => {
+    reader.onload = async () => {
+      const dataUrl = reader.result;
+      if (editorType === 'photocraft') {
+        await window.photocraft.setImage(dataUrl);
+      } else if (editorType === 'lightcraft') {
+        await window.lightcraft.setImage(dataUrl);
+      }
+      resolve(true);
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+// 4. 处理完成时自动应用
+async function showResult(url, commands) {
+  let html = '<div>✅ 处理完成</div><img src="' + fullUrl + '">';
+  
+  if (editorType) {
+    html += '<div>📥 正在自动应用到编辑器...</div>';
   }
   
-  // 否则使用上传的图片
-  // ... 现有逻辑
-}
-```
-
-#### 步骤 3：实现结果回传
-
-```javascript
-// AI 组件处理完成后
-function showResult(resultUrl, commands) {
-  // 1. 显示结果给用户
-  addMsg('bot', `✅ 处理完成！<br><img src="${resultUrl}">`);
+  addMsg('bot', html);
   
-  // 2. 同时发送给编辑器
-  if (window.photocraft && window.photocraft.setImage) {
-    // 下载结果图片并设置到编辑器
-    fetch(resultUrl)
-      .then(res => res.blob())
-      .then(blob => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          window.photocraft.setImage(reader.result);
-        };
-        reader.readAsDataURL(blob);
-      });
+  // 自动应用
+  if (editorType) {
+    const success = await sendResultToEditor(fullUrl);
+    addMsg('system', success ? '✅ 已自动应用' : '❌ 应用失败');
   }
 }
+
+// 5. 打开面板时自动加载
+btn.addEventListener('click', async () => {
+  panelOpen = !panelOpen;
+  
+  if (panelOpen) {
+    connectWS();
+    const editorName = detectEditor();
+    if (editorName) {
+      addMsg('system', '🔗 已连接 ' + editorName);
+      toolPhoto.disabled = true;  // 锁定工具选择
+      toolLight.disabled = true;
+      await autoLoadEditorImage();  // 自动加载
+    }
+    msgInput.focus();
+  }
+});
 ```
 
 ### 2.5 技术难点

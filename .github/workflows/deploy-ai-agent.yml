@@ -1,6 +1,6 @@
 name: Deploy AI Agent Server
 
-on:
+'on':
   push:
     branches: [main, master]
     paths:

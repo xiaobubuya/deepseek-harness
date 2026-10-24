@@ -1,0 +1,30 @@
+module.exports = {
+  apps: [{
+    name: 'muyaya-api',
+    script: 'src/index.js',
+    cwd: '/opt/muyaya-api',
+    instances: 1,
+    exec_mode: 'fork',
+    autorestart: true,
+    max_memory_restart: '400M',
+    watch: false,
+    max_restarts: 10,
+    restart_delay: 5000,
+    env: {
+      NODE_ENV: 'production',
+      PORT: 3001,
+      PHOTO_DIR: '/opt/muyaya/photos',
+      TMP_DIR: '/opt/muyaya/tmp',
+      DB_PATH: '/opt/muyaya/muyaya.db',
+      AUTH_SECRET: 'muyaya-secret-key-2026',
+      USERS: '{}',
+      ALLOWED_ORIGINS: 'https://muyaya.world,https://xiaobubuya.github.io',
+      AGENT_BASE_URL: 'http://127.0.0.1:3000',
+      AGENT_API_KEY: 'muyaya-secret-key-2026',
+    },
+    error_logger: './logs/error.log',
+    out_logger: './logs/out.log',
+    merge_logs: true,
+    time: true,
+  }]
+}

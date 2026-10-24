@@ -1,0 +1,164 @@
+name: Deploy Muyaya API Node
+
+on:
+  push:
+    branches: [deploy-muyaya-node]
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: 120.48.86.101
+  SERVER_USER: root
+  NODE_VERSION: '24.9.0'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Package Node.js app
+        run: |
+          mkdir -p /tmp/muyaya-node
+          cp -r muyaya-api-node/src /tmp/muyaya-node/
+          cp muyaya-api-node/package.json muyaya-api-node/schema.sql muyaya-api-node/ecosystem.config.cjs muyaya-api-node/nginx-muyaya.conf muyaya-api-node/.env.example /tmp/muyaya-node/
+          cd /tmp/muyaya-node
+          tar czf /tmp/muyaya-api-node.tar.gz .
+          echo "Package size: $(du -h /tmp/muyaya-api-node.tar.gz)"
+
+      - name: Deploy to server
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y sshpass
+
+          # Upload package
+          sshpass -e scp -o StrictHostKeyChecking=no \
+            /tmp/muyaya-api-node.tar.gz \
+            "${SERVER_USER}@${SERVER_HOST}:/opt/"
+
+          # SSH deploy
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
+          set -e
+
+          # Install Node.js app
+          mkdir -p /opt/muyaya-api
+          cd /opt/muyaya-api
+          tar xzf /opt/muyaya-api-node.tar.gz
+          rm -f /opt/muyaya-api-node.tar.gz
+
+          # Create directories
+          mkdir -p /opt/muyaya/photos/thumb /opt/muyaya/photos/preview
+          mkdir -p /opt/muyaya/tmp
+          mkdir -p /opt/muyaya-api/logs
+
+          # Install dependencies
+          npm install --production
+
+          # Initialize database
+          node -e "
+          const Database = require('better-sqlite3');
+          const db = new Database('/opt/muyaya/muyaya.db');
+          db.pragma('journal_mode = WAL');
+          db.pragma('foreign_keys = ON');
+          const fs = require('fs');
+          const schema = fs.readFileSync('schema.sql', 'utf-8');
+          db.exec(schema);
+          console.log('Database initialized');
+          db.close();
+          "
+
+          # Setup environment
+          cat > .env << ENVEOF
+          PORT=3001
+          PHOTO_DIR=/opt/muyaya/photos
+          TMP_DIR=/opt/muyaya/tmp
+          DB_PATH=/opt/muyaya/muyaya.db
+          AUTH_SECRET=muyaya-secret-key-2026
+          USERS={"muyaya":"muyaya2024"}
+          ALLOWED_ORIGINS=https://muyaya.world,https://xiaobubuya.github.io
+          AGENT_BASE_URL=http://127.0.0.1:3000
+          AGENT_API_KEY=muyaya-secret-key-2026
+          ENVEOF
+
+          # Install dotenv if needed
+          npm install dotenv 2>/dev/null || true
+
+          # Start with PM2
+          pm2 delete muyaya-api 2>/dev/null || true
+          pm2 start ecosystem.config.cjs
+          pm2 save
+
+          echo "Muyaya API Node deployed at $(date)"
+          REMOTE_SCRIPT
+
+      - name: Setup Nginx
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y sshpass
+
+          # Upload Nginx config
+          sshpass -e scp -o StrictHostKeyChecking=no \
+            /tmp/muyaya-node/nginx-muyaya.conf \
+            "${SERVER_USER}@${SERVER_HOST}:/etc/nginx/sites-available/muyaya"
+
+          # Enable Nginx
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
+          set -e
+          ln -sf /etc/nginx/sites-available/muyaya /etc/nginx/sites-enabled/muyaya
+          rm -f /etc/nginx/sites-enabled/default
+          nginx -t && systemctl reload nginx
+          echo "Nginx configured"
+          REMOTE_SCRIPT
+
+      - name: Setup HTTPS (Let's Encrypt)
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y sshpass
+
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
+          set -e
+
+          # Install certbot
+          apt install -y certbot python3-certbot-nginx
+
+          # Request certificate (use --dry-run for testing)
+          certbot --nginx -d muyaya.world -d api.muyaya.world --non-interactive --agree-tos --email admin@muyaya.world --redirect
+
+          echo "HTTPS certificate installed"
+          REMOTE_SCRIPT
+
+      - name: Health check
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass > /dev/null 2>&1
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "sleep 3 && curl -f http://localhost:3001/api/health || exit 1"
+          echo "Health check passed"

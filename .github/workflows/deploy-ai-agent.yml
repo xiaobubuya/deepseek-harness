@@ -32,15 +32,19 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-          cache-dependency-path: apps/ai-agent-server/package-lock.json
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
 
       - name: Install dependencies
-        working-directory: apps/ai-agent-server
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         working-directory: apps/ai-agent-server
-        run: npm run build
+        run: pnpm run build
 
       - name: Package
         working-directory: apps/ai-agent-server

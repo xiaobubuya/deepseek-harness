@@ -30,7 +30,7 @@ jobs:
           tar czf /tmp/muyaya-api-node.tar.gz .
           echo "Package size: $(du -h /tmp/muyaya-api-node.tar.gz)"
 
-      - name: Deploy to server
+      - name: Upload package
         env:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}
           SERVER_HOST: ${{ env.SERVER_HOST }}
@@ -39,65 +39,78 @@ jobs:
           set -e
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
-
-          # Upload package
           sshpass -e scp -o StrictHostKeyChecking=no \
             /tmp/muyaya-api-node.tar.gz \
             "${SERVER_USER}@${SERVER_HOST}:/opt/"
 
-          # SSH deploy
+      - name: Deploy Album API
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+        run: |
           sshpass -e ssh -o StrictHostKeyChecking=no \
-            "${SERVER_USER}@${SERVER_HOST}" 'set -e
+            "${SERVER_USER}@${SERVER_HOST}" bash << 'REMOTE'
+set -e
 
-          # --- Album API ---
-          mkdir -p /opt/muyaya-api
-          cd /opt/muyaya-api
-          tar xzf /opt/muyaya-api-node.tar.gz
-          rm -f /opt/muyaya-api-node.tar.gz
+echo "=== Deploying Album API ==="
+mkdir -p /opt/muyaya-api
+cd /opt/muyaya-api
+tar xzf /opt/muyaya-api-node.tar.gz
+rm -f /opt/muyaya-api-node.tar.gz
 
-          mkdir -p /opt/muyaya/photos/thumb /opt/muyaya/photos/preview
-          mkdir -p /opt/muyaya/tmp
-          mkdir -p /opt/muyaya-api/logs
+mkdir -p /opt/muyaya/photos/thumb /opt/muyaya/photos/preview
+mkdir -p /opt/muyaya/tmp
+mkdir -p /opt/muyaya-api/logs
 
-          echo "Installing dependencies..."
-          npm install --production 2>&1
+echo "Installing dependencies..."
+npm install --production 2>&1
 
-          cat > .env << ENVEOF
-          PORT=3001
-          PHOTO_DIR=/opt/muyaya/photos
-          TMP_DIR=/opt/muyaya/tmp
-          DB_PATH=/opt/muyaya/muyaya.db
-          AUTH_SECRET=muyaya-secret-key-2026
-          USERS={"muyaya":"muyaya2024"}
-          ALLOWED_ORIGINS=https://muyaya.world,https://xiaobubuya.github.io
-          AGENT_BASE_URL=http://127.0.0.1:3000
-          AGENT_API_KEY=muyaya-secret-key-2026
-          ENVEOF
+cat > .env << ENVEOF
+PORT=3001
+PHOTO_DIR=/opt/muyaya/photos
+TMP_DIR=/opt/muyaya/tmp
+DB_PATH=/opt/muyaya/muyaya.db
+AUTH_SECRET=muyaya-secret-key-2026
+USERS={"muyaya":"muyaya2024"}
+ALLOWED_ORIGINS=https://muyaya.world,https://xiaobubuya.github.io
+AGENT_BASE_URL=http://127.0.0.1:3000
+AGENT_API_KEY=muyaya-secret-key-2026
+ENVEOF
 
-          npm install dotenv 2>/dev/null || true
+npm install dotenv 2>/dev/null || true
+npm install -g pm2 2>/dev/null || true
+pm2 delete muyaya-api 2>/dev/null || true
+pm2 start src/index.js --name muyaya-api
+pm2 save
 
-          npm install -g pm2 2>/dev/null || true
-          pm2 delete muyaya-api 2>/dev/null || true
-          pm2 start src/index.js --name muyaya-api
-          pm2 save
+echo "=== Album API deployed ==="
+REMOTE
 
-          # --- Nginx ---
-          echo "Setting up Nginx..."
-          apt-get install -y nginx 2>&1 | tail -5
+      - name: Setup Nginx
+        continue-on-error: true
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" bash << 'REMOTE'
+set -e
 
-          rm -f /etc/nginx/sites-enabled/default
-          rm -f /etc/nginx/conf.d/default.conf
+echo "=== Setting up Nginx ==="
+apt-get install -y nginx 2>&1 | tail -3
 
-          cp /opt/muyaya-api/nginx-muyaya.conf /etc/nginx/conf.d/muyaya.conf
+rm -f /etc/nginx/sites-enabled/default
+rm -f /etc/nginx/conf.d/default.conf
 
-          nginx -t 2>&1
+cp /opt/muyaya-api/nginx-muyaya.conf /etc/nginx/conf.d/muyaya.conf
+nginx -t 2>&1
 
-          systemctl enable nginx 2>/dev/null || true
-          systemctl restart nginx
-          systemctl status nginx --no-pager 2>&1 | head -5
-
-          echo "Deploy completed at $(date)"
-          '
+systemctl enable nginx 2>/dev/null || true
+systemctl restart nginx
+echo "=== Nginx configured ==="
+REMOTE
 
       - name: Health check
         env:
@@ -121,14 +134,14 @@ jobs:
             echo "Attempt $i failed, retrying in 5s..."
             sleep 5
             if [ $i -eq 6 ]; then
-              echo "FAILED: API health check did not pass after 6 attempts"
-              echo "--- PM2 status ---"
+              echo "FAILED: API health check"
+              echo "--- PM2 ---"
               sshpass -e ssh -o StrictHostKeyChecking=no \
                 "${SERVER_USER}@${SERVER_HOST}" "pm2 list"
-              echo "--- PM2 logs (last 50 lines) ---"
+              echo "--- Logs ---"
               sshpass -e ssh -o StrictHostKeyChecking=no \
                 "${SERVER_USER}@${SERVER_HOST}" "pm2 logs muyaya-api --lines 50 --nostream"
-              echo "--- Port check ---"
+              echo "--- Ports ---"
               sshpass -e ssh -o StrictHostKeyChecking=no \
                 "${SERVER_USER}@${SERVER_HOST}" "ss -tlnp | grep -E '300[0-9]|:80\b'"
               exit 1

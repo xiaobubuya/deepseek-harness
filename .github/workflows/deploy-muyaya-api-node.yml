@@ -30,6 +30,37 @@ jobs:
           tar czf /tmp/muyaya-api-node.tar.gz .
           echo "Package size: $(du -h /tmp/muyaya-api-node.tar.gz)"
 
+      - name: Sync frontend to server
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y sshpass
+
+          # Clone frontend repo
+          git clone --depth 1 https://github.com/xiaobubuya/xiaobubuya.github.io.git /tmp/muyaya-web 2>&1
+          cd /tmp/muyaya-web
+          tar czf /tmp/muyaya-web.tar.gz .
+          echo "Frontend size: $(du -h /tmp/muyaya-web.tar.gz)"
+
+          # Upload frontend
+          sshpass -e scp -o StrictHostKeyChecking=no \
+            /tmp/muyaya-web.tar.gz \
+            "${SERVER_USER}@${SERVER_HOST}:/opt/"
+
+          # Deploy frontend on server
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" 'set -e
+          mkdir -p /opt/muyaya-web
+          cd /opt/muyaya-web
+          tar xzf /opt/muyaya-web.tar.gz
+          rm -f /opt/muyaya-web.tar.gz
+          echo "Frontend deployed"
+          '
+
       - name: Deploy to server
         env:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}

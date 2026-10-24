@@ -120,7 +120,10 @@ function corsHeaders(req, res) {
 
 // Apply CORS headers to all responses
 app.use((req, res, next) => {
-  Object.assign(res.headers, corsHeaders(req, res));
+  const headers = corsHeaders(req, res);
+  for (const [key, value] of Object.entries(headers)) {
+    res.setHeader(key, value);
+  }
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
   }

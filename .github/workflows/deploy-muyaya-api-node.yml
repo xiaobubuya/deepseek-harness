@@ -30,7 +30,7 @@ jobs:
           tar czf /tmp/muyaya-api-node.tar.gz .
           echo "Package size: $(du -h /tmp/muyaya-api-node.tar.gz)"
 
-      - name: Upload package
+      - name: Deploy to server
         env:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}
           SERVER_HOST: ${{ env.SERVER_HOST }}
@@ -39,78 +39,61 @@ jobs:
           set -e
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
+
+          # Upload package
           sshpass -e scp -o StrictHostKeyChecking=no \
             /tmp/muyaya-api-node.tar.gz \
             "${SERVER_USER}@${SERVER_HOST}:/opt/"
 
-      - name: Deploy Album API
-        env:
-          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
-          SERVER_HOST: ${{ env.SERVER_HOST }}
-          SERVER_USER: ${{ env.SERVER_USER }}
-        run: |
+          # SSH deploy API
           sshpass -e ssh -o StrictHostKeyChecking=no \
-            "${SERVER_USER}@${SERVER_HOST}" bash << 'REMOTE'
-set -e
+            "${SERVER_USER}@${SERVER_HOST}" 'set -e
+          mkdir -p /opt/muyaya-api
+          cd /opt/muyaya-api
+          tar xzf /opt/muyaya-api-node.tar.gz
+          rm -f /opt/muyaya-api-node.tar.gz
 
-echo "=== Deploying Album API ==="
-mkdir -p /opt/muyaya-api
-cd /opt/muyaya-api
-tar xzf /opt/muyaya-api-node.tar.gz
-rm -f /opt/muyaya-api-node.tar.gz
+          mkdir -p /opt/muyaya/photos/thumb /opt/muyaya/photos/preview
+          mkdir -p /opt/muyaya/tmp
+          mkdir -p /opt/muyaya-api/logs
 
-mkdir -p /opt/muyaya/photos/thumb /opt/muyaya/photos/preview
-mkdir -p /opt/muyaya/tmp
-mkdir -p /opt/muyaya-api/logs
+          echo "Installing dependencies..."
+          npm install --production 2>&1
 
-echo "Installing dependencies..."
-npm install --production 2>&1
+          cat > .env << ENVEOF
+          PORT=3001
+          PHOTO_DIR=/opt/muyaya/photos
+          TMP_DIR=/opt/muyaya/tmp
+          DB_PATH=/opt/muyaya/muyaya.db
+          AUTH_SECRET=muyaya-secret-key-2026
+          USERS={"muyaya":"muyaya2024"}
+          ALLOWED_ORIGINS=https://muyaya.world,https://xiaobubuya.github.io
+          AGENT_BASE_URL=http://127.0.0.1:3000
+          AGENT_API_KEY=muyaya-secret-key-2026
+          ENVEOF
 
-cat > .env << ENVEOF
-PORT=3001
-PHOTO_DIR=/opt/muyaya/photos
-TMP_DIR=/opt/muyaya/tmp
-DB_PATH=/opt/muyaya/muyaya.db
-AUTH_SECRET=muyaya-secret-key-2026
-USERS={"muyaya":"muyaya2024"}
-ALLOWED_ORIGINS=https://muyaya.world,https://xiaobubuya.github.io
-AGENT_BASE_URL=http://127.0.0.1:3000
-AGENT_API_KEY=muyaya-secret-key-2026
-ENVEOF
+          npm install dotenv 2>/dev/null || true
+          npm install -g pm2 2>/dev/null || true
+          pm2 delete muyaya-api 2>/dev/null || true
+          pm2 start src/index.js --name muyaya-api
+          pm2 save
 
-npm install dotenv 2>/dev/null || true
-npm install -g pm2 2>/dev/null || true
-pm2 delete muyaya-api 2>/dev/null || true
-pm2 start src/index.js --name muyaya-api
-pm2 save
+          echo "Album API deployed"
+          '
 
-echo "=== Album API deployed ==="
-REMOTE
-
-      - name: Setup Nginx
-        continue-on-error: true
-        env:
-          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
-          SERVER_HOST: ${{ env.SERVER_HOST }}
-          SERVER_USER: ${{ env.SERVER_USER }}
-        run: |
+          # SSH setup nginx (non-blocking)
           sshpass -e ssh -o StrictHostKeyChecking=no \
-            "${SERVER_USER}@${SERVER_HOST}" bash << 'REMOTE'
-set -e
-
-echo "=== Setting up Nginx ==="
-apt-get install -y nginx 2>&1 | tail -3
-
-rm -f /etc/nginx/sites-enabled/default
-rm -f /etc/nginx/conf.d/default.conf
-
-cp /opt/muyaya-api/nginx-muyaya.conf /etc/nginx/conf.d/muyaya.conf
-nginx -t 2>&1
-
-systemctl enable nginx 2>/dev/null || true
-systemctl restart nginx
-echo "=== Nginx configured ==="
-REMOTE
+            "${SERVER_USER}@${SERVER_HOST}" 'set -e
+          echo "Setting up Nginx..."
+          apt-get install -y nginx 2>&1 | tail -3
+          rm -f /etc/nginx/sites-enabled/default
+          rm -f /etc/nginx/conf.d/default.conf
+          cp /opt/muyaya-api/nginx-muyaya.conf /etc/nginx/conf.d/muyaya.conf
+          nginx -t 2>&1
+          systemctl enable nginx 2>/dev/null || true
+          systemctl restart nginx
+          echo "Nginx configured"
+          ' || echo "Nginx setup failed, but API is deployed"
 
       - name: Health check
         env:

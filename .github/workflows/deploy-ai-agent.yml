@@ -65,76 +65,81 @@ jobs:
           path: /tmp/
 
       - name: Deploy to server
-        uses: appleboy/scp-action@v0.1.4
-        with:
-          host: ${{ env.SERVER_HOST }}
-          username: ${{ env.SERVER_USER }}
-          password: ${{ secrets.SERVER_PASSWORD }}
-          source: /tmp/ai-agent-server.tar.gz
-          target: /opt/ai-agent-server/
-          strip_components: 0
+        env:
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+          LLM_API_URL: ${{ secrets.LLM_API_URL }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          API_KEY: ${{ secrets.API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          set -e
 
-      - name: Setup server
-        uses: appleboy/ssh-action@v0.1.8
-        with:
-          host: ${{ env.SERVER_HOST }}
-          username: ${{ env.SERVER_USER }}
-          password: ${{ secrets.SERVER_PASSWORD }}
-          script: |
-            set -e
+          # 安装 sshpass（密码认证）
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass > /dev/null 2>&1
 
-            # 解压
-            cd /opt/ai-agent-server
-            tar xzf ai-agent-server.tar.gz
-            rm -f ai-agent-server.tar.gz
+          # SCP 上传
+          sshpass -e scp -o StrictHostKeyChecking=no \
+            /tmp/ai-agent-server.tar.gz \
+            "${SERVER_USER}@${SERVER_HOST}:/opt/ai-agent-server/"
 
-            # 确保目录存在
-            mkdir -p uploads processed thumbnails logs temp
+          # SSH 远程部署
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
+          set -e
 
-            # 配置环境变量
-            LLM_API_URL="${{ secrets.LLM_API_URL }}"
-            [ -z "$LLM_API_URL" ] && LLM_API_URL="https://token.sensenova.cn/v1"
-            LLM_MODEL="${{ secrets.LLM_MODEL }}"
-            [ -z "$LLM_MODEL" ] && LLM_MODEL="sensenova-6.8-flash-lite"
-            API_KEY="${{ secrets.API_KEY }}"
-            [ -z "$API_KEY" ] && API_KEY="muyaya-secret-key-2026"
-            LLM_API_KEY="${{ secrets.LLM_API_KEY }}"
-            [ -z "$LLM_API_KEY" ] && LLM_API_KEY=""
+          cd /opt/ai-agent-server
+          tar xzf ai-agent-server.tar.gz
+          rm -f ai-agent-server.tar.gz
 
-            # 写入 .env 文件（避免 heredoc 在 YAML 块标量中的缩进问题）
-            printf '%s\n' \
-              "PORT=3000" \
-              "NODE_ENV=production" \
-              "API_KEY=$API_KEY" \
-              "LLM_API_URL=$LLM_API_URL" \
-              "LLM_API_KEY=$LLM_API_KEY" \
-              "LLM_MODEL=$LLM_MODEL" \
-              "UPLOAD_DIR=/opt/ai-agent-server/uploads" \
-              "PROCESSED_DIR=/opt/ai-agent-server/processed" \
-              "THUMBNAIL_DIR=/opt/ai-agent-server/thumbnails" \
-              "LOG_DIR=/opt/ai-agent-server/logs" \
-              "TEMP_DIR=/opt/ai-agent-server/temp" \
-              "PHOTOCRAFT_CLI=/usr/local/bin/photocraft-cli" \
-              "TASK_TIMEOUT=60000" \
-              > .env
+          mkdir -p uploads processed thumbnails logs temp
 
-            # 安装依赖
-            npm install --production
+          # 配置环境变量（带默认值）
+          LLM_API_URL="${LLM_API_URL}"
+          [ -z "$LLM_API_URL" ] && LLM_API_URL="https://token.sensenova.cn/v1"
+          LLM_MODEL="${LLM_MODEL}"
+          [ -z "$LLM_MODEL" ] && LLM_MODEL="sensenova-6.8-flash-lite"
+          API_KEY="${API_KEY}"
+          [ -z "$API_KEY" ] && API_KEY="muyaya-secret-key-2026"
+          LLM_API_KEY="${LLM_API_KEY}"
 
-            # 重启服务
-            pm2 delete ai-agent-server 2>/dev/null || true
-            pm2 start ecosystem.config.js
-            pm2 save
+          printf '%s\n' \
+            "PORT=3000" \
+            "NODE_ENV=production" \
+            "API_KEY=$API_KEY" \
+            "LLM_API_URL=$LLM_API_URL" \
+            "LLM_API_KEY=$LLM_API_KEY" \
+            "LLM_MODEL=$LLM_MODEL" \
+            "UPLOAD_DIR=/opt/ai-agent-server/uploads" \
+            "PROCESSED_DIR=/opt/ai-agent-server/processed" \
+            "THUMBNAIL_DIR=/opt/ai-agent-server/thumbnails" \
+            "LOG_DIR=/opt/ai-agent-server/logs" \
+            "TEMP_DIR=/opt/ai-agent-server/temp" \
+            "PHOTOCRAFT_CLI=/usr/local/bin/photocraft-cli" \
+            "TASK_TIMEOUT=60000" \
+            > .env
 
-            echo "Deployed at $(date)"
+          npm install --production
+
+          pm2 delete ai-agent-server 2>/dev/null || true
+          pm2 start ecosystem.config.js
+          pm2 save
+
+          echo "Deployed at $(date)"
+          REMOTE_SCRIPT
 
       - name: Health check
-        uses: appleboy/ssh-action@v0.1.8
-        with:
-          host: ${{ env.SERVER_HOST }}
-          username: ${{ env.SERVER_USER }}
-          password: ${{ secrets.SERVER_PASSWORD }}
-          script: |
-            sleep 5
-            curl -f http://localhost:3000/api/health || exit 1
-            echo "Health check passed"
+        env:
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass > /dev/null 2>&1
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "sleep 5 && curl -f http://localhost:3000/api/health || exit 1"
+          echo "Health check passed"

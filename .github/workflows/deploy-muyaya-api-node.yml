@@ -8,7 +8,7 @@ on:
 env:
   SERVER_HOST: 120.48.86.101
   SERVER_USER: root
-  NODE_VERSION: '24.9.0'
+  NODE_VERSION: '22'
 
 jobs:
   deploy:
@@ -48,23 +48,20 @@ jobs:
           # SSH deploy
           sshpass -e ssh -o StrictHostKeyChecking=no \
             "${SERVER_USER}@${SERVER_HOST}" 'set -e
-          
-          # Install Node.js app
+
+          # --- Album API ---
           mkdir -p /opt/muyaya-api
           cd /opt/muyaya-api
           tar xzf /opt/muyaya-api-node.tar.gz
           rm -f /opt/muyaya-api-node.tar.gz
 
-          # Create directories
           mkdir -p /opt/muyaya/photos/thumb /opt/muyaya/photos/preview
           mkdir -p /opt/muyaya/tmp
           mkdir -p /opt/muyaya-api/logs
 
-          # Install dependencies
           echo "Installing dependencies..."
           npm install --production 2>&1
 
-          # Setup environment
           cat > .env << ENVEOF
           PORT=3001
           PHOTO_DIR=/opt/muyaya/photos
@@ -77,39 +74,30 @@ jobs:
           AGENT_API_KEY=muyaya-secret-key-2026
           ENVEOF
 
-          # Install dotenv
           npm install dotenv 2>/dev/null || true
 
-          # Start with PM2
           npm install -g pm2 2>/dev/null || true
           pm2 delete muyaya-api 2>/dev/null || true
           pm2 start src/index.js --name muyaya-api
           pm2 save
 
-          echo "Muyaya API Node deployed at $(date)"
+          # --- Nginx ---
+          echo "Setting up Nginx..."
+          apt-get install -y nginx 2>&1 | tail -5
+
+          rm -f /etc/nginx/sites-enabled/default
+          rm -f /etc/nginx/conf.d/default.conf
+
+          cp /opt/muyaya-api/nginx-muyaya.conf /etc/nginx/conf.d/muyaya.conf
+
+          nginx -t 2>&1
+
+          systemctl enable nginx 2>/dev/null || true
+          systemctl restart nginx
+          systemctl status nginx --no-pager 2>&1 | head -5
+
+          echo "Deploy completed at $(date)"
           '
-
-      # Nginx setup disabled - will configure manually
-      # - name: Setup Nginx
-      #   env:
-      #     SSHPASS: ${{ secrets.SERVER_PASSWORD }}
-      #     SERVER_HOST: ${{ env.SERVER_HOST }}
-      #     SERVER_USER: ${{ env.SERVER_USER }}
-      #   run: |
-      #     set -e
-      #     sudo apt-get update -qq
-      #     sudo apt-get install -y sshpass
-      #     ...
-
-      # HTTPS setup disabled - will configure manually after Nginx
-      # - name: Setup HTTPS (Let's Encrypt)
-      #   env:
-      #     SSHPASS: ${{ secrets.SERVER_PASSWORD }}
-      #     SERVER_HOST: ${{ env.SERVER_HOST }}
-      #     SERVER_USER: ${{ env.SERVER_USER }}
-      #   run: |
-      #     set -e
-      #     ...
 
       - name: Health check
         env:
@@ -120,7 +108,31 @@ jobs:
           set -e
           sudo apt-get update -qq
           sudo apt-get install -y -qq sshpass > /dev/null 2>&1
-          sshpass -e ssh -o StrictHostKeyChecking=no \
-            "${SERVER_USER}@${SERVER_HOST}" \
-            "sleep 3 && curl -f http://localhost:3001/api/health || exit 1"
-          echo "Health check passed"
+
+          echo "Waiting for API to start..."
+          for i in 1 2 3 4 5 6; do
+            if sshpass -e ssh -o StrictHostKeyChecking=no \
+              "${SERVER_USER}@${SERVER_HOST}" \
+              "curl -sf http://localhost:3001/api/health" 2>/dev/null; then
+              echo ""
+              echo "API health check passed!"
+              break
+            fi
+            echo "Attempt $i failed, retrying in 5s..."
+            sleep 5
+            if [ $i -eq 6 ]; then
+              echo "FAILED: API health check did not pass after 6 attempts"
+              echo "--- PM2 status ---"
+              sshpass -e ssh -o StrictHostKeyChecking=no \
+                "${SERVER_USER}@${SERVER_HOST}" "pm2 list"
+              echo "--- PM2 logs (last 50 lines) ---"
+              sshpass -e ssh -o StrictHostKeyChecking=no \
+                "${SERVER_USER}@${SERVER_HOST}" "pm2 logs muyaya-api --lines 50 --nostream"
+              echo "--- Port check ---"
+              sshpass -e ssh -o StrictHostKeyChecking=no \
+                "${SERVER_USER}@${SERVER_HOST}" "ss -tlnp | grep -E '300[0-9]|:80\b'"
+              exit 1
+            fi
+          done
+
+          echo "All health checks passed!"

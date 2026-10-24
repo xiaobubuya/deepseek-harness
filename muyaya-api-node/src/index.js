@@ -589,11 +589,16 @@ function deletePhoto(key, env, cors) {
   return { ok: true };
 }
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`Muyaya API listening on port ${PORT}`);
-  console.log(`Photo directory: ${PHOTO_DIR}`);
-  console.log(`Database: ${DB_PATH}`);
+initDb().then(() => {
+  console.log('Database ready, starting server...');
+  app.listen(PORT, () => {
+    console.log(`Muyaya API listening on port ${PORT}`);
+    console.log(`Photo directory: ${PHOTO_DIR}`);
+    console.log(`Database: ${DB_PATH}`);
+  });
+}).catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
 });
 
 export { db };

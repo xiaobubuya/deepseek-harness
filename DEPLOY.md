@@ -2,38 +2,72 @@
 
 ## 当前架构
 
+### 当前方案（Cloudflare Tunnel）
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        用户浏览器                                │
 └─────────────────────────────────────────────────────────────────┘
                               │
+                              ▼
+                    ┌───────────────────┐
+                    │  muyaya.world     │
+                    │  (GitHub Pages)   │
+                    │  HTTPS ✅          │
+                    └───────────────────┘
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │  Cloudflare Tunnel│
+                    │  (trycloudflare)  │
+                    │  HTTPS ✅          │
+                    └───────────────────┘
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │  cloudflared      │
+                    │  (服务器端客户端)  │
+                    └───────────────────┘
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │  AI Agent Server  │
+                    │  120.48.86.101    │
+                    │  :3000            │
+                    └───────────────────┘
+                              │
                     ┌─────────┴─────────┐
                     │                   │
                     ▼                   ▼
-        ┌───────────────────┐  ┌───────────────────┐
-        │  muyaya.world     │  │  120.48.86.101    │
-        │  (GitHub Pages)   │  │  (百度云服务器)    │
-        │  HTTPS ✅          │  │  HTTP ❌           │
-        └───────────────────┘  └───────────────────┘
+              ┌───────────┐      ┌───────────┐
+              │PhotoCraft │      │LightCraft │
+              │   CLI     │      │   CLI     │
+              └───────────┘      └───────────┘
+```
+
+**隧道 URL**: `https://shops-voip-storage-click.trycloudflare.com`
+
+### 目标架构（备案完成后）
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        用户浏览器                                │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │  muyaya.world     │
+                    │  (百度云服务器)   │
+                    │  HTTPS ✅          │
+                    └───────────────────┘
+                              │
+                    ┌─────────┴─────────┐
                     │                   │
-                    │         ┌─────────┴─────────┐
-                    │         │                   │
-                    │         ▼                   ▼
-                    │   ┌───────────┐      ┌───────────┐
-                    │   │ Muyaya API│      │ AI Agent  │
-                    │   │ :3001     │      │ Server    │
-                    │   └───────────┘      │ :3000     │
-                    │                      └───────────┘
-                    │                              │
-                    │                      ┌───────┴───────┐
-                    │                      │               │
-                    │                      ▼               ▼
-                    │              ┌───────────┐   ┌───────────┐
-                    │              │PhotoCraft │   │LightCraft │
-                    │              │   CLI     │   │   CLI     │
-                    │              └───────────┘   └───────────┘
-                    │
-                    └─── ⚠️ Mixed Content 阻断 ───
+                    ▼                   ▼
+              ┌───────────┐      ┌───────────┐
+              │ Muyaya API│      │ AI Agent  │
+              │ :3001     │      │ :3000     │
+              └───────────┘      └───────────┘
 ```
 
 ## 当前问题
@@ -97,21 +131,41 @@ certbot --nginx -d muyaya.world
 
 ---
 
-### 方案 B：Cloudflare Tunnel（快速方案）
+### 方案 B：Cloudflare Tunnel（当前方案 ✅）
 
-**步骤**：
-```bash
-# 服务器上安装
-wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-chmod +x cloudflared-linux-amd64
-mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+**状态**：✅ 已部署，正常运行
 
-# 启动隧道
-cloudflared tunnel --url http://localhost:3000 --no-autoupdate
+**当前隧道 URL**：
+```
+https://shops-voip-storage-click.trycloudflare.com
 ```
 
-**优点**：不改 DNS，不需要备案，5 分钟搞定
-**缺点**：依赖第三方服务
+**端点**：
+- API: `https://shops-voip-storage-click.trycloudflare.com/api/health`
+- WebSocket: `wss://shops-voip-storage-click.trycloudflare.com/ws?key=bubu`
+
+**服务器端配置**：
+```bash
+# 安装位置
+/usr/local/bin/cloudflared
+
+# 启动命令
+nohup cloudflared tunnel --url http://localhost:3000 --no-autoupdate \
+  > /var/log/cloudflared.log 2>&1 &
+
+# 查看日志
+tail -f /var/log/cloudflared.log
+
+# 重启隧道
+pkill cloudflared
+nohup cloudflared tunnel --url http://localhost:3000 --no-autoupdate \
+  > /var/log/cloudflared.log 2>&1 &
+```
+
+**优点**：不改 DNS，不需要备案，HTTPS WebSocket
+**缺点**：临时隧道，URL 可能变化，依赖第三方服务
+
+**注意**：这是临时方案，备案完成后需要切换到方案 A
 
 ---
 
@@ -144,14 +198,63 @@ curl -X POST http://120.48.86.101:3000/api/chat \
 
 ## 下一步计划
 
-### 备案完成前
-- [ ] 部署当前代码到服务器（nginx 配置更新）
-- [ ] 测试 HTTP 轮询方案（可选）
+### 当前状态（备案完成前）
+
+### ✅ 已完成
+- [x] Cloudflare Tunnel 部署完成
+- [x] 前端代码已更新（使用隧道 URL）
+- [x] AI 聊天组件已更新（ai-widget.js, ai-agent.html）
+- [x] 主站 API 已更新（app.js, common.js）
+- [x] DEPLOY.md 文档已更新
+- [x] 代码已推送到 GitHub
+
+### ⏳ 进行中
 - [ ] 等待域名备案完成
 
-### 备案完成后
+### 隧道 URL
+```
+https://shops-voip-storage-click.trycloudflare.com
+```
+
+### 使用隧道 URL 的文件
+| 文件 | 用途 |
+|------|------|
+| `app.js` | 主站 API（相册、登录） |
+| `common.js` | 共享 API 模块 |
+| `ai-widget.js` | AI 聊天悬浮组件 |
+| `ai-agent.html` | AI 聊天独立页面 |
+
+### 备案完成后切换计划
+
+**步骤 1：修改 DNS**
+```
+muyaya.world A 记录 → 120.48.86.101
+```
+
+**步骤 2：配置 SSL 证书**
+```bash
+# 在服务器上执行
+apt install certbot python3-certbot-nginx
+certbot --nginx -d muyaya.world
+```
+
+**步骤 3：停止 Cloudflare Tunnel**
+```bash
+pkill cloudflared
+```
+
+**步骤 4：更新前端代码**
+```javascript
+// 改回相对 URL 或直接域名
+const API_BASE = 'https://muyaya.world';
+const WS_URL = 'wss://muyaya.world/ws?key=bubu';
+```
+
+**步骤 5：验证**
 - [ ] 修改 DNS：`muyaya.world` → `120.48.86.101`
 - [ ] 配置 SSL 证书（Let's Encrypt）
+- [ ] 停止 Cloudflare Tunnel
+- [ ] 更新前端代码
 - [ ] 验证 WebSocket 连接（`wss://muyaya.world/ws`）
 - [ ] 端到端测试 AI 聊天功能
 

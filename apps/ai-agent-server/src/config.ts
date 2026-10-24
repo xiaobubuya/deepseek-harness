@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import 'dotenv/config'
 
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
@@ -19,11 +19,12 @@ export const config = {
 
   // CLI
   photocraftCli: process.env.PHOTOCRAFT_CLI || '/usr/local/bin/photocraft-cli',
+  harnessCli: process.env.HARNESS_CLI || '/usr/local/bin/dsh',
   taskTimeout: parseInt(process.env.TASK_TIMEOUT || '60000', 10),
 
   // Cleanup
   cleanupIntervalHours: 24,
   maxFileAgeDays: 7,
-} as const;
+} as const
 
-export type Config = typeof config;
+export type Config = typeof config

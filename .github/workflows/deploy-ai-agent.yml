@@ -41,6 +41,9 @@ jobs:
           cp apps/ai-agent-server/package.json /tmp/package/
           cp apps/ai-agent-server/ecosystem.config.cjs /tmp/package/
           cp apps/ai-agent-server/.env.example /tmp/package/
+          # Include CLI wrapper
+          mkdir -p /tmp/package/cli
+          cp apps/ai-agent-server/cli/photocraft-cli.mjs /tmp/package/cli/
           cd /tmp/package
           tar czf /tmp/ai-agent-server.tar.gz .
           echo "Artifact size: $(du -h /tmp/ai-agent-server.tar.gz)"
@@ -107,7 +110,23 @@ jobs:
           # Deploy on server
           sshpass -e ssh -o StrictHostKeyChecking=no \
             "${SERVER_USER}@${SERVER_HOST}" \
-            "set -e; cd /opt/ai-agent-server; tar xzf ai-agent-server.tar.gz; rm -f ai-agent-server.tar.gz; mkdir -p uploads processed thumbnails logs temp; npm install --production; pm2 delete ai-agent-server 2>/dev/null || true; pm2 start ecosystem.config.cjs; pm2 save; echo 'Deployed at $(date)'"
+            "set -e
+             cd /opt/ai-agent-server
+             tar xzf ai-agent-server.tar.gz
+             rm -f ai-agent-server.tar.gz
+             mkdir -p uploads processed thumbnails logs temp
+             npm install --production
+             # Install PhotoCraft CLI wrapper
+             if [ -f cli/photocraft-cli.mjs ]; then
+               chmod +x cli/photocraft-cli.mjs
+               ln -sf /opt/ai-agent-server/cli/photocraft-cli.mjs /usr/local/bin/photocraft-cli
+               echo 'CLI wrapper installed'
+               node /usr/local/bin/photocraft-cli --help
+             fi
+             pm2 delete ai-agent-server 2>/dev/null || true
+             pm2 start ecosystem.config.cjs
+             pm2 save
+             echo 'Deployed at $(date)'"
 
       - name: Health check
         env:

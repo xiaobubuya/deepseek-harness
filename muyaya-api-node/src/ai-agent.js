@@ -45,7 +45,7 @@ async function handleChat(request, apiKey) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'X-API-Key': apiKey,
       },
       body: JSON.stringify(request.body),
     });
@@ -63,7 +63,7 @@ async function handleUpload(request, apiKey) {
 
     const res = await fetch(`${AGENT_BASE}/api/upload`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { 'X-API-Key': apiKey },
       body: formData,
     });
     return await res.json();
@@ -75,7 +75,7 @@ async function handleUpload(request, apiKey) {
 async function handleImages(apiKey) {
   try {
     const res = await fetch(`${AGENT_BASE}/api/images`, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { 'X-API-Key': apiKey },
     });
     return await res.json();
   } catch (err) {
@@ -86,7 +86,7 @@ async function handleImages(apiKey) {
 async function handleStatus(taskId, apiKey) {
   try {
     const res = await fetch(`${AGENT_BASE}/api/chat/status/${taskId}`, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { 'X-API-Key': apiKey },
     });
     return await res.json();
   } catch (err) {
@@ -97,7 +97,7 @@ async function handleStatus(taskId, apiKey) {
 async function handleResult(p, apiKey) {
   try {
     const res = await fetch(`${AGENT_BASE}/${p}`, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { 'X-API-Key': apiKey },
     });
     if (!res.ok) return { error: 'not_found' };
 

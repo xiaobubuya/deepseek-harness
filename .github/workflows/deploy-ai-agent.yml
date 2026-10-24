@@ -43,7 +43,7 @@ jobs:
           mkdir -p dist-package
           cp -r dist dist-package/
           cp package.json dist-package/
-          cp ecosystem.config.js dist-package/
+          cp ecosystem.config.cjs dist-package/
           cp .env.example dist-package/
           cd dist-package
           tar czf ../ai-agent-server.tar.gz .
@@ -127,7 +127,7 @@ jobs:
           npm install --production
 
           pm2 delete ai-agent-server 2>/dev/null || true
-          pm2 start ecosystem.config.js
+          pm2 start ecosystem.config.cjs
           pm2 save
 
           echo "Deployed at $(date)"

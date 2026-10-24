@@ -69,7 +69,7 @@ jobs:
           USERS={"muyaya":"muyaya2024"}
           ALLOWED_ORIGINS=https://muyaya.world,https://xiaobubuya.github.io
           AGENT_BASE_URL=http://127.0.0.1:3000
-          AGENT_API_KEY=muyaya-secret-key-2026
+          AGENT_API_KEY=bubu
           ENVEOF
 
           npm install dotenv 2>/dev/null || true

@@ -4,9 +4,10 @@
    ================================================================ */
 
 const AGENT_BASE = process.env.AGENT_BASE_URL || 'http://120.48.86.101:3000';
+const AGENT_KEY = process.env.AGENT_API_KEY || 'bubu';
 
 export function routeAiAgent({ method, path, request, env, cors, session }) {
-  const apiKey = env.AGENT_API_KEY || 'muyaya-secret-key-2026';
+  const apiKey = env.AGENT_API_KEY || AGENT_KEY;
 
   // POST /api/ai-agent/chat
   if (path === '/api/ai-agent/chat' && method === 'POST') {

@@ -60,24 +60,9 @@ jobs:
           mkdir -p /opt/muyaya/tmp
           mkdir -p /opt/muyaya-api/logs
 
-          # Install dependencies (this may take a while for better-sqlite3)
+          # Install dependencies
           echo "Installing dependencies..."
           npm install --production 2>&1
-
-          # Create and run database init script
-          cat > init-db.js << "DBSCRIPT"
-          const Database = require("better-sqlite3");
-          const fs = require("fs");
-          const db = new Database("/opt/muyaya/muyaya.db");
-          db.pragma("journal_mode = WAL");
-          db.pragma("foreign_keys = ON");
-          const schema = fs.readFileSync("/opt/muyaya-api/schema.sql", "utf-8");
-          db.exec(schema);
-          console.log("Database initialized at /opt/muyaya/muyaya.db");
-          db.close();
-          DBSCRIPT
-          node init-db.js
-          rm -f init-db.js
 
           # Setup environment
           cat > .env << ENVEOF

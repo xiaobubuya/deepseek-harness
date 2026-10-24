@@ -1,7 +1,7 @@
 /**
  * Muyaya Album API — Node.js Express version
  * ================================================================
- * Local filesystem + SQLite (better-sqlite3)
+ * Local filesystem + SQLite (sql.js - pure JS)
  * 
  * Architecture:
  *   GitHub Pages (muyaya.world) → Nginx → this API (port 3001)
@@ -11,14 +11,13 @@
 
 import express from 'express';
 import { createRequire } from 'module';
-import Database from 'better-sqlite3';
 import multer from 'multer';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import sharp from 'sharp';
+import { initDatabase, getDb, exec, prepare, transaction, saveDatabase, closeDatabase } from './database.js';
 import { routeAlbums } from './albums.js';
 import { routePublicShare, routeAlbumShare } from './share.js';
 import { serveShare } from './share-page.js';
@@ -50,14 +49,22 @@ for (const dir of [PHOTO_DIR, THUMB_DIR, PREVIEW_DIR, TMP_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// Database initialization
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+// Database initialization (async)
+let db = null;
 
-// Initialize schema
-const schema = fs.readFileSync(new URL('../schema.sql', import.meta.url), 'utf-8');
-db.exec(schema);
+async function initDb() {
+  await initDatabase(DB_PATH);
+  db = getDb();
+  
+  // Initialize schema
+  const schema = fs.readFileSync(new URL('../schema.sql', import.meta.url), 'utf-8');
+  exec(schema);
+}
+
+initDb().catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
+});
 
 // Express app
 const app = express();

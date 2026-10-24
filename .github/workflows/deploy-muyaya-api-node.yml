@@ -99,19 +99,39 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
 
+          # Create sites-available directory if not exists
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" "mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled"
+
           # Upload Nginx config
           sshpass -e scp -o StrictHostKeyChecking=no \
             /tmp/muyaya-node/nginx-muyaya.conf \
             "${SERVER_USER}@${SERVER_HOST}:/etc/nginx/sites-available/muyaya"
 
-          # Enable Nginx
+          # Enable Nginx and test config
           sshpass -e ssh -o StrictHostKeyChecking=no \
             "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
           set -e
-          ln -sf /etc/nginx/sites-available/muyaya /etc/nginx/sites-enabled/muyaya
+          echo "=== Current Nginx config ==="
+          ls -la /etc/nginx/sites-enabled/
+
+          # Remove default site
           rm -f /etc/nginx/sites-enabled/default
-          nginx -t && systemctl reload nginx
-          echo "Nginx configured"
+
+          # Create symlink for our config
+          ln -sf /etc/nginx/sites-available/muyaya /etc/nginx/sites-enabled/muyaya
+
+          echo "=== New Nginx config ==="
+          ls -la /etc/nginx/sites-enabled/
+
+          # Test config
+          echo "=== Testing Nginx config ==="
+          nginx -t
+
+          # Reload nginx
+          systemctl reload nginx
+
+          echo "Nginx configured successfully"
           REMOTE_SCRIPT
 
       - name: Setup HTTPS (Let's Encrypt)

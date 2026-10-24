@@ -122,16 +122,8 @@ jobs:
             "TEMP_DIR=/opt/ai-agent-server/temp" \
             "PHOTOCRAFT_CLI=/usr/local/bin/photocraft-cli" \
             "HARNESS_CLI=/usr/local/bin/dsh" \
-            "DEEPSEEK_API_KEY=$LLM_API_KEY" \
             "TASK_TIMEOUT=60000" \
             > .env
-
-          # Install DeepSeek Harness CLI
-          npm install -g @deepseek-ai/dsh 2>&1
-          echo "Harness installed: $(which dsh)"
-
-          # Configure Harness LLM credentials via env var
-          export DEEPSEEK_API_KEY="$LLM_API_KEY"
 
           npm install --production
 

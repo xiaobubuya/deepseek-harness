@@ -89,73 +89,27 @@ jobs:
           echo "Muyaya API Node deployed at $(date)"
           '
 
-      - name: Setup Nginx
-        env:
-          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
-          SERVER_HOST: ${{ env.SERVER_HOST }}
-          SERVER_USER: ${{ env.SERVER_USER }}
-        run: |
-          set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y sshpass
+      # Nginx setup disabled - will configure manually
+      # - name: Setup Nginx
+      #   env:
+      #     SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+      #     SERVER_HOST: ${{ env.SERVER_HOST }}
+      #     SERVER_USER: ${{ env.SERVER_USER }}
+      #   run: |
+      #     set -e
+      #     sudo apt-get update -qq
+      #     sudo apt-get install -y sshpass
+      #     ...
 
-          # Create sites-available directory if not exists
-          sshpass -e ssh -o StrictHostKeyChecking=no \
-            "${SERVER_USER}@${SERVER_HOST}" "mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled"
-
-          # Upload Nginx config
-          sshpass -e scp -o StrictHostKeyChecking=no \
-            /tmp/muyaya-node/nginx-muyaya.conf \
-            "${SERVER_USER}@${SERVER_HOST}:/etc/nginx/sites-available/muyaya"
-
-          # Enable Nginx and test config
-          sshpass -e ssh -o StrictHostKeyChecking=no \
-            "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
-          set -e
-          echo "=== Current Nginx config ==="
-          ls -la /etc/nginx/sites-enabled/
-
-          # Remove default site
-          rm -f /etc/nginx/sites-enabled/default
-
-          # Create symlink for our config
-          ln -sf /etc/nginx/sites-available/muyaya /etc/nginx/sites-enabled/muyaya
-
-          echo "=== New Nginx config ==="
-          ls -la /etc/nginx/sites-enabled/
-
-          # Test config
-          echo "=== Testing Nginx config ==="
-          nginx -t
-
-          # Reload nginx
-          systemctl reload nginx
-
-          echo "Nginx configured successfully"
-          REMOTE_SCRIPT
-
-      - name: Setup HTTPS (Let's Encrypt)
-        env:
-          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
-          SERVER_HOST: ${{ env.SERVER_HOST }}
-          SERVER_USER: ${{ env.SERVER_USER }}
-        run: |
-          set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y sshpass
-
-          sshpass -e ssh -o StrictHostKeyChecking=no \
-            "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
-          set -e
-
-          # Install certbot
-          apt install -y certbot python3-certbot-nginx
-
-          # Request certificate (use --dry-run for testing)
-          certbot --nginx -d muyaya.world -d api.muyaya.world --non-interactive --agree-tos --email admin@muyaya.world --redirect
-
-          echo "HTTPS certificate installed"
-          REMOTE_SCRIPT
+      # HTTPS setup disabled - will configure manually after Nginx
+      # - name: Setup HTTPS (Let's Encrypt)
+      #   env:
+      #     SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+      #     SERVER_HOST: ${{ env.SERVER_HOST }}
+      #     SERVER_USER: ${{ env.SERVER_USER }}
+      #   run: |
+      #     set -e
+      #     ...
 
       - name: Health check
         env:

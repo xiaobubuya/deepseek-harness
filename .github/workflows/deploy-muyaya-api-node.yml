@@ -47,9 +47,8 @@ jobs:
 
           # SSH deploy
           sshpass -e ssh -o StrictHostKeyChecking=no \
-            "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
-          set -e
-
+            "${SERVER_USER}@${SERVER_HOST}" 'set -e
+          
           # Install Node.js app
           mkdir -p /opt/muyaya-api
           cd /opt/muyaya-api
@@ -61,21 +60,24 @@ jobs:
           mkdir -p /opt/muyaya/tmp
           mkdir -p /opt/muyaya-api/logs
 
-          # Install dependencies
-          npm install --production
+          # Install dependencies (this may take a while for better-sqlite3)
+          echo "Installing dependencies..."
+          npm install --production 2>&1
 
-          # Initialize database
-          node -e "
-          const Database = require('better-sqlite3');
-          const db = new Database('/opt/muyaya/muyaya.db');
-          db.pragma('journal_mode = WAL');
-          db.pragma('foreign_keys = ON');
-          const fs = require('fs');
-          const schema = fs.readFileSync('schema.sql', 'utf-8');
+          # Create and run database init script
+          cat > init-db.js << "DBSCRIPT"
+          const Database = require("better-sqlite3");
+          const fs = require("fs");
+          const db = new Database("/opt/muyaya/muyaya.db");
+          db.pragma("journal_mode = WAL");
+          db.pragma("foreign_keys = ON");
+          const schema = fs.readFileSync("/opt/muyaya-api/schema.sql", "utf-8");
           db.exec(schema);
-          console.log('Database initialized');
+          console.log("Database initialized at /opt/muyaya/muyaya.db");
           db.close();
-          "
+          DBSCRIPT
+          node init-db.js
+          rm -f init-db.js
 
           # Setup environment
           cat > .env << ENVEOF
@@ -90,16 +92,17 @@ jobs:
           AGENT_API_KEY=muyaya-secret-key-2026
           ENVEOF
 
-          # Install dotenv if needed
+          # Install dotenv
           npm install dotenv 2>/dev/null || true
 
           # Start with PM2
+          npm install -g pm2 2>/dev/null || true
           pm2 delete muyaya-api 2>/dev/null || true
-          pm2 start ecosystem.config.cjs
+          pm2 start src/index.js --name muyaya-api
           pm2 save
 
           echo "Muyaya API Node deployed at $(date)"
-          REMOTE_SCRIPT
+          '
 
       - name: Setup Nginx
         env:

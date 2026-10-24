@@ -103,21 +103,22 @@ jobs:
             LLM_API_KEY="${{ secrets.LLM_API_KEY }}"
             [ -z "$LLM_API_KEY" ] && LLM_API_KEY=""
 
-            cat > .env << ENVEOF
-PORT=3000
-NODE_ENV=production
-API_KEY=$API_KEY
-LLM_API_URL=$LLM_API_URL
-LLM_API_KEY=$LLM_API_KEY
-LLM_MODEL=$LLM_MODEL
-UPLOAD_DIR=/opt/ai-agent-server/uploads
-PROCESSED_DIR=/opt/ai-agent-server/processed
-THUMBNAIL_DIR=/opt/ai-agent-server/thumbnails
-LOG_DIR=/opt/ai-agent-server/logs
-TEMP_DIR=/opt/ai-agent-server/temp
-PHOTOCRAFT_CLI=/usr/local/bin/photocraft-cli
-TASK_TIMEOUT=60000
-ENVEOF
+            # 写入 .env 文件（避免 heredoc 在 YAML 块标量中的缩进问题）
+            printf '%s\n' \
+              "PORT=3000" \
+              "NODE_ENV=production" \
+              "API_KEY=$API_KEY" \
+              "LLM_API_URL=$LLM_API_URL" \
+              "LLM_API_KEY=$LLM_API_KEY" \
+              "LLM_MODEL=$LLM_MODEL" \
+              "UPLOAD_DIR=/opt/ai-agent-server/uploads" \
+              "PROCESSED_DIR=/opt/ai-agent-server/processed" \
+              "THUMBNAIL_DIR=/opt/ai-agent-server/thumbnails" \
+              "LOG_DIR=/opt/ai-agent-server/logs" \
+              "TEMP_DIR=/opt/ai-agent-server/temp" \
+              "PHOTOCRAFT_CLI=/usr/local/bin/photocraft-cli" \
+              "TASK_TIMEOUT=60000" \
+              > .env
 
             # 安装依赖
             npm install --production

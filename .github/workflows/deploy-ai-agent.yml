@@ -78,10 +78,13 @@ jobs:
 
           # 安装 sshpass（密码认证）
           sudo apt-get update -qq
-          sudo apt-get install -y -qq sshpass > /dev/null 2>&1
+          sudo apt-get install -y sshpass
+          echo "sshpass installed: $(which sshpass)"
+          echo "SSHPASS set: $([ -n \"$SSHPASS\" ] && echo yes || echo no)"
+          echo "Host: ${SERVER_HOST} User: ${SERVER_USER}"
 
-          # SCP 上传
-          sshpass -e scp -o StrictHostKeyChecking=no \
+          # SCP 上传（-v 显示调试信息）
+          sshpass -e scp -v -o StrictHostKeyChecking=no \
             /tmp/ai-agent-server.tar.gz \
             "${SERVER_USER}@${SERVER_HOST}:/opt/ai-agent-server/"
 

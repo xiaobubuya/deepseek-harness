@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { config } from '../config.js';
 import { parseInstruction } from '../core/llm-parser.js';
-import { executeCommands, validateCommand } from '../core/cli-executor.js';
+import { executeCommands, validateCommand, type Tool } from '../core/cli-executor.js';
 import { getImagePath } from '../utils/file-manager.js';
 import { logger } from '../utils/logger.js';
 import { websocketManager } from '../websocket/manager.js';
@@ -12,7 +12,8 @@ const chat = Router();
  * POST /api/chat - 接收用户指令
  */
 chat.post('/', async (req: Request, res: Response) => {
-  const { message, imageId, imageFilename } = req.body;
+  const { message, imageId, imageFilename, tool } = req.body;
+  const cliTool: Tool = tool === 'lightcraft' ? 'lightcraft' : 'photocraft';
 
   if (!message) {
     res.status(400).json({ error: '缺少 message 字段' });
@@ -43,7 +44,7 @@ chat.post('/', async (req: Request, res: Response) => {
         if (ws) {
           await ws.send(JSON.stringify({ type: 'thinking', thought }));
         }
-      });
+      }, cliTool);
 
       if (ws) {
         await ws.send(
@@ -58,7 +59,7 @@ chat.post('/', async (req: Request, res: Response) => {
 
       // 验证命令
       for (const cmd of result.commands) {
-        const error = validateCommand(cmd.cmd, cmd.params);
+        const error = validateCommand(cmd.cmd, cmd.params, cliTool);
         if (error) {
           if (ws) {
             await ws.send(JSON.stringify({ type: 'error', code: 'INVALID_COMMAND', message: error }));
@@ -81,7 +82,7 @@ chat.post('/', async (req: Request, res: Response) => {
             await ws.send(JSON.stringify({ type: 'log', level: 'info', message: log }));
           }
         },
-      });
+      }, cliTool);
 
       if (executionResult.status === 'success') {
         if (ws) {

@@ -19,6 +19,7 @@ export const config = {
 
   // CLI
   photocraftCli: process.env.PHOTOCRAFT_CLI || '/usr/local/bin/photocraft-cli',
+  lightcraftCli: process.env.LIGHTCRAFT_CLI || '/usr/local/bin/lightcraft-cli',
   harnessCli: process.env.HARNESS_CLI || '/usr/local/bin/dsh',
   taskTimeout: parseInt(process.env.TASK_TIMEOUT || '60000', 10),
 

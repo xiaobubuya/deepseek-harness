@@ -35,14 +35,15 @@ async function isHarnessAvailable(): Promise<boolean> {
 export async function parseInstruction(
   userMessage: string,
   onThinking?: (thought: string) => void,
+  tool: string = 'photocraft',
 ): Promise<LLMResult> {
-  logger.info(`Parsing instruction: ${userMessage.slice(0, 100)}`)
+  logger.info(`Parsing instruction (${tool}): ${userMessage.slice(0, 100)}`)
 
   // Try Harness first
   if (await isHarnessAvailable()) {
     logger.info('Using DeepSeek Harness agent')
     try {
-      const rawOutput = await callHarnessAgent(userMessage, onThinking)
+      const rawOutput = await callHarnessAgent(userMessage, onThinking, tool)
       return parseResponse(rawOutput)
     } catch (error) {
       logger.warn('Harness agent failed, falling back to LLM', error)
@@ -52,7 +53,7 @@ export async function parseInstruction(
   }
 
   // Fallback: direct LLM call
-  return parseInstructionFallback(userMessage, onThinking)
+  return parseInstructionFallback(userMessage, onThinking, tool)
 }
 
 /**

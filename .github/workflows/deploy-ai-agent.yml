@@ -7,39 +7,32 @@ on:
       - 'apps/ai-agent-server/**'
       - '.github/workflows/deploy-ai-agent.yml'
   workflow_dispatch:
-    inputs:
-      deploy:
-        description: 'Force deploy'
-        required: false
-        default: true
-        type: boolean
 
 env:
   SERVER_HOST: 120.48.86.101
   SERVER_USER: root
-  NODE_VERSION: '20'
+  NODE_VERSION: '24.9.0'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: pnpm-lock.yaml
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 9
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          cache-dependency-path: apps/ai-agent-server/pnpm-lock.yaml
+
       - name: Install dependencies
+        working-directory: apps/ai-agent-server
         run: pnpm install --frozen-lockfile
 
       - name: Build
@@ -57,10 +50,6 @@ jobs:
           cd dist-package
           tar czf ../ai-agent-server.tar.gz .
 
-      - name: Meta
-        id: meta
-        run: echo "version=$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -70,7 +59,6 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -105,13 +93,16 @@ jobs:
             # 确保目录存在
             mkdir -p uploads processed thumbnails logs temp
 
-            # 配置环境变量（使用 defaults 避免空值问题）
+            # 配置环境变量
             LLM_API_URL="${{ secrets.LLM_API_URL }}"
             [ -z "$LLM_API_URL" ] && LLM_API_URL="https://token.sensenova.cn/v1"
             LLM_MODEL="${{ secrets.LLM_MODEL }}"
             [ -z "$LLM_MODEL" ] && LLM_MODEL="sensenova-6.8-flash-lite"
             API_KEY="${{ secrets.API_KEY }}"
+            [ -z "$API_KEY" ] && API_KEY="muyaya-secret-key-2026"
             LLM_API_KEY="${{ secrets.LLM_API_KEY }}"
+            [ -z "$LLM_API_KEY" ] && LLM_API_KEY=""
+
             cat > .env << ENVEOF
 PORT=3000
 NODE_ENV=production

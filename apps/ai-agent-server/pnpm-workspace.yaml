@@ -1,0 +1,10 @@
+# Standalone package — not part of the parent monorepo workspace.
+# This isolates ai-agent-server so `pnpm install` in this directory
+# only resolves its own dependencies instead of traversing to the
+# 388-project parent workspace.
+packages: []
+
+# Allow build scripts for packages that need native compilation.
+allowBuilds:
+  esbuild: true
+  sharp: true

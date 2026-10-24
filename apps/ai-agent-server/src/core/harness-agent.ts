@@ -1,5 +1,8 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { writeFileSync, unlinkSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { config } from '../config.js'
 import { logger } from '../utils/logger.js'
 
@@ -83,6 +86,21 @@ function parseHarnessOutput(stdout: string): string {
 }
 
 /**
+ * Generate a Harness profile patch to override the model.
+ * Returns the path to the generated patch file.
+ */
+function generateModelPatch(model: string): string {
+  const patchContent = `- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: ${model}
+`
+  const patchPath = join(tmpdir(), `dsh-model-patch-${Date.now()}.yml`)
+  writeFileSync(patchPath, patchContent, 'utf-8')
+  return patchPath
+}
+
+/**
  * Call DeepSeek Harness headless mode to parse a user instruction.
  * Returns the raw text output (expected to be JSON with commands).
  */
@@ -94,8 +112,12 @@ export async function callHarnessAgent(
 
   const task = `${PHOTOCRAFT_SCHEMA}\n\nUser instruction: "${userMessage}"`
 
+  // Generate model patch
+  const patchPath = generateModelPatch(config.llmModel)
+
   const args = [
     '--profile', 'headless',
+    '--patch', patchPath,
     '--permission-mode', 'danger-full-access',
     '--json',
     task,
@@ -105,7 +127,7 @@ export async function callHarnessAgent(
     const result = await Promise.race([
       execFileAsync(config.harnessCli, args, {
         timeout: config.taskTimeout * 2,
-        maxBuffer: 10 * 1024 * 1024, // 10MB
+        maxBuffer: 10 * 1024 * 1024,
         env: {
           ...process.env,
           DSH_PERMISSION_MODE: 'danger-full-access',
@@ -125,5 +147,12 @@ export async function callHarnessAgent(
     const err = error as { message: string; stderr?: string }
     logger.error('Harness agent failed', err)
     throw new Error(`Harness agent error: ${err.stderr || err.message}`)
+  } finally {
+    // Clean up patch file
+    try {
+      unlinkSync(patchPath)
+    } catch {
+      // ignore cleanup errors
+    }
   }
 }

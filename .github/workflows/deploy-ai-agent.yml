@@ -3,9 +3,6 @@ name: Deploy AI Agent Server
 'on':
   push:
     branches: [main, master]
-    paths:
-      - 'apps/ai-agent-server/**'
-      - '.github/workflows/deploy-ai-agent.yml'
   workflow_dispatch:
 
 env:
@@ -37,22 +34,37 @@ jobs:
         working-directory: apps/ai-agent-server
         run: pnpm run build
 
-      - name: Package
-        working-directory: apps/ai-agent-server
+      - name: Install DeepSeek Harness
         run: |
-          mkdir -p dist-package
-          cp -r dist dist-package/
-          cp package.json dist-package/
-          cp ecosystem.config.cjs dist-package/
-          cp .env.example dist-package/
-          cd dist-package
-          tar czf ../ai-agent-server.tar.gz .
+          mkdir -p /tmp/harness
+          cd /tmp/harness
+          npm init -y
+          npm install @deepseek-ai/dsh
+          # Resolve actual dsh entry point
+          DSH_BIN=$(readlink -f node_modules/.bin/dsh)
+          echo "DSH actual binary: $DSH_BIN"
+          echo "DSH bin resolved"
+          # Copy the full harness installation
+          cp -r node_modules /tmp/harness-deps
+
+      - name: Package
+        run: |
+          mkdir -p /tmp/package
+          cp -r apps/ai-agent-server/dist /tmp/package/
+          cp apps/ai-agent-server/package.json /tmp/package/
+          cp apps/ai-agent-server/ecosystem.config.cjs /tmp/package/
+          cp apps/ai-agent-server/.env.example /tmp/package/
+          # Bundle Harness
+          cp -r /tmp/harness-deps /tmp/package/harness
+          cd /tmp/package
+          tar czf /tmp/ai-agent-server.tar.gz .
+          echo "Artifact size: $(du -h /tmp/ai-agent-server.tar.gz)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ai-agent-server
-          path: apps/ai-agent-server/ai-agent-server.tar.gz
+          path: /tmp/ai-agent-server.tar.gz
 
   deploy:
     needs: build
@@ -75,31 +87,34 @@ jobs:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: |
           set -e
-
-          # 安装 sshpass（密码认证）
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
-          echo "sshpass installed: $(which sshpass)"
-          echo "SSHPASS set: $([ -n \"$SSHPASS\" ] && echo yes || echo no)"
-          echo "Host: ${SERVER_HOST} User: ${SERVER_USER}"
 
-          # SCP 上传（-v 显示调试信息）
-          sshpass -e scp -v -o StrictHostKeyChecking=no \
+          sshpass -e scp -o StrictHostKeyChecking=no \
             /tmp/ai-agent-server.tar.gz \
             "${SERVER_USER}@${SERVER_HOST}:/opt/ai-agent-server/"
 
-          # SSH 远程部署
           sshpass -e ssh -o StrictHostKeyChecking=no \
             "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
           set -e
-
           cd /opt/ai-agent-server
           tar xzf ai-agent-server.tar.gz
           rm -f ai-agent-server.tar.gz
-
           mkdir -p uploads processed thumbnails logs temp
 
-          # 配置环境变量（带默认值）
+          # Setup Harness CLI
+          if [ -d "harness" ]; then
+            ln -sf /opt/ai-agent-server/harness/.bin/dsh /usr/local/bin/dsh 2>/dev/null
+            ln -sf /opt/ai-agent-server/harness/.bin/dsh /opt/ai-agent-server/.bin-dsh 2>/dev/null
+            if [ -f /usr/local/bin/dsh ]; then
+              echo "Harness CLI ready"
+              /usr/local/bin/dsh --version 2>&1 || echo "dsh version check failed (ok, fallback available)"
+            fi
+          else
+            echo "Harness not bundled"
+          fi
+
+          # Env
           LLM_API_URL="${LLM_API_URL}"
           [ -z "$LLM_API_URL" ] && LLM_API_URL="https://token.sensenova.cn/v1"
           LLM_MODEL="${LLM_MODEL}"
@@ -122,6 +137,7 @@ jobs:
             "TEMP_DIR=/opt/ai-agent-server/temp" \
             "PHOTOCRAFT_CLI=/usr/local/bin/photocraft-cli" \
             "HARNESS_CLI=/usr/local/bin/dsh" \
+            "DEEPSEEK_API_KEY=$LLM_API_KEY" \
             "TASK_TIMEOUT=60000" \
             > .env
 

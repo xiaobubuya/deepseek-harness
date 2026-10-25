@@ -94,23 +94,101 @@
 ## 已完成的修复
 
 ### 1. AI 悬浮组件
-- `ai-widget.js` - 悬浮聊天组件
-- 嵌入 PhotoCraft 和 LightCraft 编辑器页面
-- 支持工具切换（调色/修图）
+
+> ⚠️ **不在这个仓库里。** `ai-widget.js` 和它注入的两个 index.html 都在
+> `xiaobubuya/xiaobubuya.github.io`（GitHub Pages 那个前端仓库）。
+> 这个仓库只是被它调用的一端。别在这里找 `ai-widget.js`，也别说「这里已经修好了」。
+>
+> 那边有一条铁律：**PhotoCraft 的 wasm 只能从打过 patch 的源码构建，
+> 上游 release 包覆盖会删掉 AI Bridge，悬浮球变成死按钮。**
+> 详见前端仓库 `docs/AI_WIDGET.md`（2026-10-25 的 `d325301` 就是这么坏的，
+> `dabb051` 修好的）。
 
 ### 2. 同源代理支持
 - nginx 配置添加 WebSocket 代理 (`/ws`)
 - 前端代码支持相对 URL
 - 部署工作流添加前端同步步骤
 
-### 3. 服务器端点（待验证）
+### 3. 服务器端点（实测）
 
-| 端点 | 用途 |
-|------|------|
-| `/` | 静态文件 |
-| `/api/` | Muyaya API 代理 |
-| `/agent/` | AI Agent 代理 |
-| `/ws` | WebSocket 代理 |
+> ⚠️ 2026-10-26 实测：`muyaya.world` 的 DNS 指向 GitHub Pages
+> （185.199.110.153），**不经过这台服务器的 nginx**。
+> 所以下面这些反代配置虽然写进了 `/etc/nginx/sites-available/muyaya`
+> （`server_name muyaya.world api.muyaya.world`），实际上没有流量进来。
+> `curl http://localhost/photocraft/index.html` 在这台机器上返回 **404**。
+
+| 实际在用的 | 端口 | 说明 |
+|---|---|---|
+| `muyaya.world` | —— | GitHub Pages，本仓库无关 |
+| `localhost:3000/api/health` | 3000 | AI Agent Server，`{"status":"ok"}` |
+| `localhost:3001/api/health` | 3001 | Muyaya API，`{"ok":true}` |
+| cloudflared x2 | —— | `--url http://localhost:3000` / `:3001`，各自一个 `*.cfargotunnel.com` |
+
+`muyaya-api` 的 `.env` 关键项：`ALLOWED_ORIGINS=https://muyaya.world,https://xiaobubuya.github.io`、
+`AGENT_BASE_URL=http://127.0.0.1:3000`、`AGENT_API_KEY=bubu`。
+
+---
+
+## Harness CLI（`dsh`）部署
+
+工作流：`.github/workflows/deploy-harness-cli.yml`。
+已在分支 `ci/harness-cli` 验证跑绿（run `40208477416`，44 秒，commit `c0f9cc8e72`），
+尚未合入 `deploy-muyaya-node`。
+
+### 部署形态
+
+服务器上三样东西：
+
+```
+/opt/harness-node/          Node 24.17.0 独立前缀（202MB）
+/opt/harness-cli/           npm install @deepseek-ai/dsh 的产物（855MB）
+/usr/local/bin/dsh          真实文件（不是 symlink），exec 上面的 Node 24
+```
+
+系统 Node 20.18.0 保持不动，ai-agent-server 和 muyaya-api 还在用它。
+
+### 踩过的坑（都是真的，别重踩）
+
+1. **Node 24 是必须的，不是偏好。**
+   `apps/cli/src/bin.js` 用了 `import.meta.main`，这个 API 只在 Node 24.8.0+ 存在。
+   Node 20 下它是 `undefined` → 整个 CLI 静默 return，`dsh --version` **空输出、exit 0**。
+   不会报错，所以你只会以为「dsh 装好了」。先在 Node 20 上装完再排查输出，会浪费时间。
+
+2. **不要去 build monorepo。**
+   发布的 `@deepseek-ai/dsh` npm 包已经自带完整运行时
+   （`npm install` 装 855MB、约 9 分钟）。而且本分支从未改过
+   `apps/cli` / `packages` / `native` / `vendor` / `pnpm-lock.yaml` ——
+   **npm 包就是本分支的构建产物**，两者等价。
+   build monorepo 要多跑 pnpm install + native addon + web build，
+   产出一个 700MB+ tarball 再 scp 过去，收益为零。
+
+3. **`/usr/local/bin/dsh` 必须是真实文件，不能是 symlink。**
+   `cat > 已有的symlink` 会**穿透写进目标文件**，不是替换 symlink。
+   它会把你 symlink 指向的东西弄坏。old master 的做法是 symlink 到
+   `/opt/ai-agent-server/harness/.bin/dsh`，就差点把那份源码改写了。
+
+4. **名字叫 `harness` 的目录不是 `node_modules`。**
+   Node 的 resolver 只会向上遍历**字面上叫 `node_modules`** 的目录。
+   old master 的布局是 `/opt/ai-agent-server/harness/@deepseek-ai/dsh`
+   和 `harness/@deepseek-ai/dsh-app-boot` 并排放着 —— 依赖明明就在旁边，
+   CLI 也永远看不到它，报 `ERR_MODULE_NOT_FOUND: @deepseek-ai/dsh-app-boot`。
+   这就是最初「包在错误位置」的那个 bug 的根因。
+
+5. **加幂等戳。**
+   `/opt/harness-cli/.dsh-version` 记录已安装版本；和 pin 的版本一致就跳过
+   npm install。把一次 9 分钟的运行压到约 44 秒。
+
+6. **workflow 的 `env:` 不会传到远端。**
+   `env:` 和 step `env:` 只在 runner 上。你 `scp` 过去 `bash` 的脚本里一个都没有。
+   要在脚本内部声明。
+
+7. **只验证，不要重启。**
+   `dsh` 是 ai-agent-server 每次请求时现起的子进程，换版本不需要重启它。
+   重启只会白白制造一次中断。
+
+8. **`paths:` 必须包含 workflow 自己的目录。**
+   否则只改 workflow 文件的提交不会匹配任何 path，run 根本不会启动。
+
 
 ## 解决方案
 

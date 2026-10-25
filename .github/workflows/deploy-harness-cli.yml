@@ -2,25 +2,18 @@ name: Deploy Harness CLI
 
 'on':
   push:
-    branches: [deploy-muyaya-node, main, master]
+    branches: [deploy-muyaya-node, ci/harness-cli, main, master]
     paths:
-      # Without this entry a commit that only adds or edits this workflow
-      # matches nothing and the run never starts.
+      # Without the workflow's own directory a commit that only adds or edits
+      # this file matches no path and the run never starts.
       - '.github/workflows/**'
-      - 'apps/cli/**'
-      - 'packages/**'
-      - 'native/**'
-      - 'vendor/**'
-      - 'scripts/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'tsconfig*.json'
-      - 'tsdown.config.ts'
+      # The CLI is the runtime the AI agent server shells out to, so keep it in
+      # sync whenever that consumer changes. Cheap: unchanged versions are a no-op.
+      - 'apps/ai-agent-server/**'
   workflow_dispatch:
 
 # Serialize deploys: a new push replaces the in-flight run instead of letting
-# two builds race for the same /usr/local/bin/dsh symlink.
+# two installs race for /usr/local/bin/dsh.
 concurrency:
   group: deploy-harness-cli
   cancel-in-progress: true
@@ -28,81 +21,12 @@ concurrency:
 env:
   SERVER_HOST: 120.48.86.101
   SERVER_USER: root
-  # Matches apps/cli engines (>=24.9.0); the packaged native prebuilds only
-  # load against the Node ABI they were produced for.
-  NODE_VERSION: '24'
-  PNPM_VERSION: '11.28.5'
-  DSH_PACKAGE: '@deepseek-ai/dsh'
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Setup pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@${PNPM_VERSION} --activate
-          node -v
-          pnpm -v
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Emits lib/types via tsc, then bundles every runtime with tsdown;
-      # apps/cli has no package-level build script of its own.
-      - name: Build artifacts
-        run: pnpm run build:artifacts
-
-      - name: Verify CLI builds
-        run: |
-          test -f apps/cli/lib/bin.js || { ls -la apps/cli/lib; exit 1; }
-          node apps/cli/lib/bin.js --version
-
-      - name: Stage self-contained deploy tree
-        run: |
-          rm -rf /tmp/dsh-deploy
-          # --legacy keeps the package at the tree root next to a real
-          # node_modules, so the server needs no install step at all. This also
-          # resolves the ~100 workspace:* dependencies that npm cannot parse.
-          pnpm deploy --legacy --prod --filter "${DSH_PACKAGE}" /tmp/dsh-deploy
-          test -f /tmp/dsh-deploy/lib/bin.js || { find /tmp/dsh-deploy -maxdepth 2; exit 1; }
-          test -d /tmp/dsh-deploy/node_modules || exit 1
-          echo '--- deployed layout ---'
-          ls -la /tmp/dsh-deploy
-          du -sh /tmp/dsh-deploy /tmp/dsh-deploy/node_modules
-          echo '--- native prebuilds ---'
-          find /tmp/dsh-deploy -name '*.node' -printf '%s %p\n' | sort -n | tail -20
-
-      - name: Package
-        run: |
-          cd /tmp/dsh-deploy
-          # GNU tar preserves the relative symlinks pnpm's virtual store relies on.
-          tar czf /tmp/harness-cli.tar.gz .
-          du -h /tmp/harness-cli.tar.gz
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: harness-cli
-          path: /tmp/harness-cli.tar.gz
-          if-no-files-found: error
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 25
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: harness-cli
-          path: /tmp/
-
       - name: Deploy to server
         env:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}
@@ -113,18 +37,28 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq sshpass ca-certificates curl
 
+          # Ship the script as a file rather than piping it over ssh stdin:
+          # sshpass takes over the local pty for password entry, which makes
+          # stdin forwarding unreliable.
           cat > /tmp/deploy-harness-cli.sh <<'REMOTE'
           set -euo pipefail
 
-          # Bump deliberately; must stay >= 24.9.0 and on the same major as the
-          # build job, or the packaged native prebuilds will not load.
+          # Declared here, not in the Actions env block: the script runs on the
+          # server, where workflow env vars are not present. Bump DSH_VERSION to
+          # pick up a new CLI release; it is the only change the run needs.
           NODE_DIST=v24.17.0
+          DSH_VERSION=0.2.1-rc.2
           NODE_DIR=/opt/harness-node
+          CLI_DIR=/opt/harness-cli
+          NODE_BIN="$NODE_DIR/bin/node"
+          BIN="$CLI_DIR/node_modules/@deepseek-ai/dsh/lib/bin.js"
 
-          # Isolated prefix: the ai-agent-server and muyaya-api services keep
-          # running on the system Node 20 untouched.
-          if [ ! -x "$NODE_DIR/bin/node" ] || ! "$NODE_DIR/bin/node" -v | grep -q '^v24\.'; then
-            echo "Installing Node ${NODE_DIST} into ${NODE_DIR}"
+          # 1. Isolated Node 24 prefix. The published CLI's bin.js tests
+          # `import.meta.main`, which only exists on Node >= 24.8, so the system
+          # Node 20 can never run it. The prefix also has to stay on the same
+          # major as the prebuilt @deepseek-ai/node-addon-system binaries.
+          if [ ! -x "$NODE_BIN" ] || ! "$NODE_BIN" -v | grep -q '^v24\.'; then
+            echo "installing Node ${NODE_DIST} into ${NODE_DIR}"
             cd /opt
             curl -fsSLO "https://nodejs.org/dist/${NODE_DIST}/node-${NODE_DIST}-linux-x64.tar.xz"
             rm -rf "$NODE_DIR"
@@ -132,33 +66,45 @@ jobs:
             tar -xJf "node-${NODE_DIST}-linux-x64.tar.xz" -C "$NODE_DIR" --strip-components=1
             rm -f "node-${NODE_DIST}-linux-x64.tar.xz"
           fi
-          "$NODE_DIR/bin/node" -v
+          "$NODE_BIN" -v
 
-          rm -rf /opt/harness-cli
-          mkdir -p /opt/harness-cli
-          tar xzf /opt/harness-cli.tar.gz -C /opt/harness-cli
-          rm -f /opt/harness-cli.tar.gz
-          test -f /opt/harness-cli/lib/bin.js
+          # 2. The published CLI already ships the full runtime, so there is no
+          # monorepo build and no dependency transfer: everything is fetched
+          # from the registry on the server. Idempotent on the pinned version.
+          INSTALLED="$(cat "$CLI_DIR/.dsh-version" 2>/dev/null || true)"
+          if [ "$INSTALLED" != "$DSH_VERSION" ]; then
+            echo "installing @deepseek-ai/dsh@${DSH_VERSION}"
+            rm -rf "$CLI_DIR"
+            mkdir -p "$CLI_DIR"
+            cd "$CLI_DIR"
+            npm init -y >/dev/null
+            PATH="$NODE_DIR/bin:$PATH" npm install "@deepseek-ai/dsh@${DSH_VERSION}" --omit=dev --no-audit --no-fund
+            echo "$DSH_VERSION" > "$CLI_DIR/.dsh-version"
+            du -sh "$CLI_DIR/node_modules"
+          else
+            echo "@deepseek-ai/dsh@${DSH_VERSION} already installed, skipping npm install"
+          fi
+          test -f "$BIN"
 
+          # 3. Launcher written as a real file. `cat >` through the pre-existing
+          # symlink would write into the symlink target instead of replacing it.
+          rm -f /usr/local/bin/dsh
           cat > /usr/local/bin/dsh <<'LAUNCH'
           #!/bin/sh
-          # bin.js ships `#!/usr/bin/env node`, which would resolve to the system
-          # Node 20; pin the runtime the artifact was built for instead.
-          exec /opt/harness-node/bin/node /opt/harness-cli/lib/bin.js "$@"
+          # Pin the runtime explicitly: lib/bin.js carries a
+          # `#!/usr/bin/env node` shebang that would otherwise resolve to the
+          # system Node 20, and it never runs there (see NODE_DIST).
+          exec /opt/harness-node/bin/node /opt/harness-cli/node_modules/@deepseek-ai/dsh/lib/bin.js "$@"
           LAUNCH
           chmod +x /usr/local/bin/dsh
           ls -l /usr/local/bin/dsh
 
-          export PATH="$NODE_DIR/bin:$PATH"
-          echo '--- dsh --version ---'
+          # 4. Verify: the version flag, a real subcommand, and the native
+          # addon that carries the host bindings.
           dsh --version
+          timeout 60 dsh --help | head -3
+          ls -d "$CLI_DIR/node_modules/@deepseek-ai/node-addon-system-linux-x64"
           REMOTE
-
-          # Upload as a file and execute it: sshpass takes over the local pty for
-          # password entry, so piping the script through ssh stdin is not reliable.
-          sshpass -e scp -o StrictHostKeyChecking=no \
-            /tmp/harness-cli.tar.gz \
-            "${SERVER_USER}@${SERVER_HOST}:/opt/"
 
           sshpass -e scp -o StrictHostKeyChecking=no \
             /tmp/deploy-harness-cli.sh \
@@ -190,15 +136,30 @@ jobs:
           echo "FAILED: dsh --version did not pass"
           sshpass -e ssh -o StrictHostKeyChecking=no \
             "${SERVER_USER}@${SERVER_HOST}" \
-            "ls -la /usr/local/bin/dsh; ls -la /opt/harness-cli; ls /opt/harness-node/bin"
+            "ls -l /usr/local/bin/dsh; cat /usr/local/bin/dsh; ls /opt/harness-cli; ls /opt/harness-node/bin"
           exit 1
 
-      - name: Restart AI agent server
+      - name: Verify running services
         env:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}
           SERVER_HOST: ${{ env.SERVER_HOST }}
           SERVER_USER: ${{ env.SERVER_USER }}
         run: |
+          set -euo pipefail
+          # Read-only on purpose. The Harness CLI is a subprocess the ai-agent
+          # server spawns per request, so there is no restart to pick it up;
+          # restarting here would only add an outage with no benefit.
+          # Single-quoted remote commands keep the quoting flat across the
+          # runner, ssh, and the remote shell.
           sshpass -e ssh -o StrictHostKeyChecking=no \
             "${SERVER_USER}@${SERVER_HOST}" \
-            "pm2 restart ai-agent-server 2>/dev/null && pm2 save || echo 'ai-agent-server restart skipped'"
+            'system node stays on Node 20; harness CLI runs on its own prefix'
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            'node -v; /opt/harness-node/bin/node -v; pm2 ls'
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            'curl -sf http://localhost:3000/api/health && echo ai-agent-server healthy'
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            'curl -sf http://localhost:3001/api/health && echo muyaya-api healthy'

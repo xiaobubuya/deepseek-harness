@@ -4,66 +4,101 @@ name: Deploy Harness CLI
   push:
     branches: [deploy-muyaya-node, main, master]
     paths:
+      # Without this entry a commit that only adds or edits this workflow
+      # matches nothing and the run never starts.
+      - '.github/workflows/**'
       - 'apps/cli/**'
       - 'packages/**'
-      - 'pnpm-lock.yaml'
+      - 'native/**'
+      - 'vendor/**'
+      - 'scripts/**'
       - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig*.json'
+      - 'tsdown.config.ts'
   workflow_dispatch:
+
+# Serialize deploys: a new push replaces the in-flight run instead of letting
+# two builds race for the same /usr/local/bin/dsh symlink.
+concurrency:
+  group: deploy-harness-cli
+  cancel-in-progress: true
 
 env:
   SERVER_HOST: 120.48.86.101
   SERVER_USER: root
-  NODE_VERSION: '22'
+  # Matches apps/cli engines (>=24.9.0); the packaged native prebuilds only
+  # load against the Node ABI they were produced for.
+  NODE_VERSION: '24'
+  PNPM_VERSION: '11.28.5'
+  DSH_PACKAGE: '@deepseek-ai/dsh'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Setup pnpm via corepack
+      - name: Setup pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@9 --activate
+          corepack prepare pnpm@${PNPM_VERSION} --activate
+          node -v
+          pnpm -v
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build native system
-        run: pnpm run build:native-system
+      # Emits lib/types via tsc, then bundles every runtime with tsdown;
+      # apps/cli has no package-level build script of its own.
+      - name: Build artifacts
+        run: pnpm run build:artifacts
 
-      - name: Build CLI
+      - name: Verify CLI builds
         run: |
-          cd apps/cli
-          pnpm run build
+          test -f apps/cli/lib/bin.js || { ls -la apps/cli/lib; exit 1; }
+          node apps/cli/lib/bin.js --version
+
+      - name: Stage self-contained deploy tree
+        run: |
+          rm -rf /tmp/dsh-deploy
+          # --legacy keeps the package at the tree root next to a real
+          # node_modules, so the server needs no install step at all. This also
+          # resolves the ~100 workspace:* dependencies that npm cannot parse.
+          pnpm deploy --legacy --prod --filter "${DSH_PACKAGE}" /tmp/dsh-deploy
+          test -f /tmp/dsh-deploy/lib/bin.js || { find /tmp/dsh-deploy -maxdepth 2; exit 1; }
+          test -d /tmp/dsh-deploy/node_modules || exit 1
+          echo '--- deployed layout ---'
+          ls -la /tmp/dsh-deploy
+          du -sh /tmp/dsh-deploy /tmp/dsh-deploy/node_modules
+          echo '--- native prebuilds ---'
+          find /tmp/dsh-deploy -name '*.node' -printf '%s %p\n' | sort -n | tail -20
 
       - name: Package
         run: |
-          mkdir -p /tmp/package
-          cd apps/cli
-          cp -r lib /tmp/package/
-          cp package.json /tmp/package/
-          cd /tmp/package
+          cd /tmp/dsh-deploy
+          # GNU tar preserves the relative symlinks pnpm's virtual store relies on.
           tar czf /tmp/harness-cli.tar.gz .
-          echo "Artifact size: $(du -h /tmp/harness-cli.tar.gz)"
+          du -h /tmp/harness-cli.tar.gz
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: harness-cli
           path: /tmp/harness-cli.tar.gz
+          if-no-files-found: error
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: harness-cli
           path: /tmp/
@@ -74,31 +109,64 @@ jobs:
           SERVER_HOST: ${{ env.SERVER_HOST }}
           SERVER_USER: ${{ env.SERVER_USER }}
         run: |
-          set -e
+          set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y sshpass
+          sudo apt-get install -y -qq sshpass ca-certificates curl
 
-          # Upload package
+          cat > /tmp/deploy-harness-cli.sh <<'REMOTE'
+          set -euo pipefail
+
+          # Bump deliberately; must stay >= 24.9.0 and on the same major as the
+          # build job, or the packaged native prebuilds will not load.
+          NODE_DIST=v24.17.0
+          NODE_DIR=/opt/harness-node
+
+          # Isolated prefix: the ai-agent-server and muyaya-api services keep
+          # running on the system Node 20 untouched.
+          if [ ! -x "$NODE_DIR/bin/node" ] || ! "$NODE_DIR/bin/node" -v | grep -q '^v24\.'; then
+            echo "Installing Node ${NODE_DIST} into ${NODE_DIR}"
+            cd /opt
+            curl -fsSLO "https://nodejs.org/dist/${NODE_DIST}/node-${NODE_DIST}-linux-x64.tar.xz"
+            rm -rf "$NODE_DIR"
+            mkdir -p "$NODE_DIR"
+            tar -xJf "node-${NODE_DIST}-linux-x64.tar.xz" -C "$NODE_DIR" --strip-components=1
+            rm -f "node-${NODE_DIST}-linux-x64.tar.xz"
+          fi
+          "$NODE_DIR/bin/node" -v
+
+          rm -rf /opt/harness-cli
+          mkdir -p /opt/harness-cli
+          tar xzf /opt/harness-cli.tar.gz -C /opt/harness-cli
+          rm -f /opt/harness-cli.tar.gz
+          test -f /opt/harness-cli/lib/bin.js
+
+          cat > /usr/local/bin/dsh <<'LAUNCH'
+          #!/bin/sh
+          # bin.js ships `#!/usr/bin/env node`, which would resolve to the system
+          # Node 20; pin the runtime the artifact was built for instead.
+          exec /opt/harness-node/bin/node /opt/harness-cli/lib/bin.js "$@"
+          LAUNCH
+          chmod +x /usr/local/bin/dsh
+          ls -l /usr/local/bin/dsh
+
+          export PATH="$NODE_DIR/bin:$PATH"
+          echo '--- dsh --version ---'
+          dsh --version
+          REMOTE
+
+          # Upload as a file and execute it: sshpass takes over the local pty for
+          # password entry, so piping the script through ssh stdin is not reliable.
           sshpass -e scp -o StrictHostKeyChecking=no \
             /tmp/harness-cli.tar.gz \
             "${SERVER_USER}@${SERVER_HOST}:/opt/"
 
-          # Deploy on server
+          sshpass -e scp -o StrictHostKeyChecking=no \
+            /tmp/deploy-harness-cli.sh \
+            "${SERVER_USER}@${SERVER_HOST}:/tmp/deploy-harness-cli.sh"
+
           sshpass -e ssh -o StrictHostKeyChecking=no \
             "${SERVER_USER}@${SERVER_HOST}" \
-            "set -e
-             cd /opt
-             rm -rf harness-cli
-             mkdir -p harness-cli
-             tar xzf harness-cli.tar.gz -C harness-cli
-             rm -f harness-cli.tar.gz
-             cd /opt/harness-cli
-             npm install --production
-             ln -sf /opt/harness-cli/lib/bin.js /usr/local/bin/dsh
-             chmod +x /usr/local/bin/dsh
-             dsh --version || echo 'dsh version check failed'
-             pm2 restart ai-agent-server 2>/dev/null || true
-             echo 'Harness CLI deployed at $(date)'"
+            "bash /tmp/deploy-harness-cli.sh; rc=\$?; rm -f /tmp/deploy-harness-cli.sh; exit \$rc"
 
       - name: Health check
         env:
@@ -106,26 +174,31 @@ jobs:
           SERVER_HOST: ${{ env.SERVER_HOST }}
           SERVER_USER: ${{ env.SERVER_USER }}
         run: |
-          set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq sshpass > /dev/null 2>&1
+          set -euo pipefail
+          sudo apt-get install -y -qq sshpass > /dev/null 2>&1 || true
 
-          echo "Waiting for Harness CLI..."
           for i in 1 2 3 4 5 6; do
             if sshpass -e ssh -o StrictHostKeyChecking=no \
-              "${SERVER_USER}@${SERVER_HOST}" \
-              "dsh --version" 2>/dev/null; then
-              echo ""
-              echo "Health check passed!"
+              "${SERVER_USER}@${SERVER_HOST}" "dsh --version"; then
+              echo "Harness CLI health check passed"
               exit 0
             fi
             echo "Attempt $i failed, retrying in 5s..."
             sleep 5
           done
 
-          echo "FAILED: Health check did not pass"
+          echo "FAILED: dsh --version did not pass"
           sshpass -e ssh -o StrictHostKeyChecking=no \
-            "${SERVER_USER}@${SERVER_HOST}" "ls -la /usr/local/bin/dsh"
-          sshpass -e ssh -o StrictHostKeyChecking=no \
-            "${SERVER_USER}@${SERVER_HOST}" "ls -la /opt/harness-cli/"
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "ls -la /usr/local/bin/dsh; ls -la /opt/harness-cli; ls /opt/harness-node/bin"
           exit 1
+
+      - name: Restart AI agent server
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "pm2 restart ai-agent-server 2>/dev/null && pm2 save || echo 'ai-agent-server restart skipped'"

@@ -1,0 +1,96 @@
+name: Deploy Cloudflare Tunnel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [deploy-muyaya-node]
+    paths:
+      - '.github/workflows/deploy-cloudflared.yml'
+
+env:
+  SERVER_HOST: 120.48.86.101
+  SERVER_USER: root
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install and start cloudflared on server
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y sshpass
+
+          echo "=== Installing cloudflared ==="
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" 'set -e
+
+          # Download and install cloudflared
+          if ! command -v cloudflared &> /dev/null; then
+            echo "Installing cloudflared..."
+            wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+            chmod +x /usr/local/bin/cloudflared
+          fi
+
+          echo "cloudflared version: $(cloudflared --version)"
+
+          # Stop existing cloudflared if running
+          pkill cloudflared 2>/dev/null || true
+
+          # Start cloudflared tunnel
+          echo "Starting cloudflared tunnel..."
+          nohup cloudflared tunnel --url http://localhost:3000 --no-autoupdate \
+            > /var/log/cloudflared.log 2>&1 &
+
+          # Wait for URL to be generated
+          echo "Waiting for tunnel URL..."
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 2
+            if grep -q "https://" /var/log/cloudflared.log 2>/dev/null; then
+              break
+            fi
+          done
+
+          # Extract URL
+          TUNNEL_URL=$(grep -oP "https://[a-z0-9-]+\.cfargotunnel\.com" /var/log/cloudflared.log | head -1)
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "ERROR: Failed to get tunnel URL"
+            cat /var/log/cloudflared.log
+            exit 1
+          fi
+
+          # $GITHUB_ENV lives on the runner, not on this server, so the URL
+          # has to be read back over ssh. Write it to a file first.
+          echo "$TUNNEL_URL" > /opt/cloudflared-url.txt
+
+          echo "=== Cloudflare Tunnel Started ==="
+          echo "URL: $TUNNEL_URL"
+
+          # Verify tunnel works
+          echo ""
+          echo "=== Health Check ==="
+          sleep 2
+          curl -sf "$TUNNEL_URL/api/health" && echo "" || echo "Health check failed"
+          '
+
+          # $GITHUB_ENV only exists on the runner, so read the URL back over ssh.
+          TUNNEL_URL=$(sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" 'cat /opt/cloudflared-url.txt')
+          echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
+          echo "Tunnel URL: $TUNNEL_URL"
+
+      - name: Output tunnel URL
+        if: always()
+        run: |
+          echo "## Cloudflare Tunnel" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** \`$TUNNEL_URL\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Endpoints:**" >> $GITHUB_STEP_SUMMARY
+          echo "- API: \`$TUNNEL_URL/api/health\`" >> $GITHUB_STEP_SUMMARY
+          echo "- WebSocket: \`$TUNNEL_URL/ws?key=bubu\`" >> $GITHUB_STEP_SUMMARY

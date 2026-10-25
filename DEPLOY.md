@@ -366,3 +366,73 @@ git push origin main
 - 域名：muyaya.world
 - GitHub: xiaobubuya/deepseek-harness
 - 前端仓库: xiaobubuya/xiaobubuya.github.io
+
+---
+
+## 未完成事项（2026-10-26 关门前记的）
+
+都是明确知道有问题、但这次没动的。按优先级排。
+
+### 1. `ci/harness-cli` 还没合进 `deploy-muyaya-node`
+
+- `deploy-harness-cli.yml` 已在 `ci/harness-cli` 验证跑绿：run `40208477416`，44 秒，
+  commit `c0f9cc8e72`。分支 HEAD 现在 `1c5603a524`。
+- 阻塞原因：同分支的 `deploy-muyaya-api-node.yml` 的 `on: push` 只写了
+  `branches: [deploy-muyaya-node]`，**没有 `paths`**。合入那一刻就会触发它。
+- 那个工作流还缺 `concurrency` 和 `timeout-minutes`。历史表现：约 2h20m 后失败，
+  失败点在 frontend sync（tar/gzip），位置在 `pm2 delete muyaya-api` **之前**，
+  所以历史上没伤到生产。但不该靠这个赌。
+- 建议顺序：先给它加 `paths`（`muyaya-api-node/**`、`muyaya-web/**`、
+  `.github/workflows/deploy-muyaya-api-node.yml`），再加 `concurrency`，
+  最后合 `ci/harness-cli`。
+
+### 2. `/api/parse` 没跑过真实请求
+
+commit `7ee651c070`。`apps/ai-agent-server/src/api/parse.ts` +
+`src/core/studio-prompts.ts` + `index.ts` 路由注册。
+
+- 没发过真实请求。服务器上 `/opt/ai-agent-server/` 跑的还是旧代码，
+  `/api/parse` 在线上不存在。
+- LightCraft 和 PhotoCraft 目前共用同一份 `STUDIO_SYSTEM_PROMPT`，
+  LightCraft 专属提示词没写。`parse.ts` 里的 `cliTool` 只用在日志和返回值里。
+- 行为细节：值钳到 `[-1, 1]`；`ALL_STUDIO_KEYS` 之外的 key 静默丢弃（不报错）。
+- 注意 `parse.ts` 自己的 JSON 解析是包了 try/catch 的，
+  下面第 4 条那个裸 `SyntaxError` 只存在于 `llm-parser-fallback.ts`。
+
+### 3. `deploy-cloudflared.yml` 从未运行过
+
+commit `1c5603a524`。文件本身是新增的，之前一直是未跟踪状态。
+
+- 触发方式：`workflow_dispatch` 手动。push 到 `deploy-muyaya-node` 时
+  只有改动该文件自身才会触发（`paths` 只写它自己）。
+- 已修的是能证明的错误：原来 `echo "TUNNEL_URL=..." >> $GITHUB_ENV`
+  写在 ssh 单引号命令内部，那行在**服务器上**执行，服务器上不存在
+  `GITHUB_ENV`，所以下一步 `$TUNNEL_URL` 永远是空的，summary 里只有空白 URL。
+  现在 URL 落到服务器 `/opt/cloudflared-url.txt`，runner 侧 ssh 读回再写 `GITHUB_ENV`。
+- 未验证的部分：`wget .../releases/latest/download/cloudflared-linux-amd64`、
+  `cloudflared tunnel --url http://localhost:3000 --no-autoupdate` 起的匿名隧道、
+  `grep -oP "https://[a-z0-9-]+\.cfargotunnel\.com"` 抓 URL。
+- 跑它之前记得先 `pkill cloudflared` 的后果想清楚：这台机器上现在跑着两个
+  指向 3000/3001 的隧道，第 42 行 `pkill cloudflared 2>/dev/null || true` 会**一起杀掉**。
+
+### 4. 两个运行时 bug 没碰
+
+**`llm-parser-fallback.ts` 的裸 `SyntaxError`** —— 位置确定。
+`apps/ai-agent-server/src/core/llm-parser-fallback.ts` 的 `parseResponse`（141-157 行）：
+
+- 143-145 行处理了「响应里根本没有花括号」的情况，抛干净的
+  `LLM 返回格式错误，无法解析 JSON`。
+- **147 行 `const parsed = JSON.parse(jsonMatch[0])` 没有 try/catch。**
+  只要响应里有花括号但内容不是合法 JSON（比如 LLM 返回了裸数字包在
+  markdown 里、尾部多余逗号、`{123}` 这类），就直接抛 `SyntaxError`，
+  错误类型和上面的友好提示不一致，调用方没法区分「LLM 写坏了」和「代码崩了」。
+- 调用链：`parseResponse` ← `parseInstructionFallback`（118 行，exported）
+  ← `llm-parser.ts` 第 2 行 import。
+- 修法就一行：把 147 行包进 try/catch，抛成和 144 行同类的错误。
+
+**Muyaya API 的 `.then` 报错** —— 没定位到，别浪费时间找。
+
+- 本仓库**没有** muyaya-api 的源码，它只存在于服务器 `/opt/muyaya-api/`。
+- 没有复现步骤，只有症状记录。查的话直接上服务器看
+  `pm2 logs muyaya-api`。
+- 该服务现在健康：`:3001/api/health` → `{"ok":true}`，pm2 id 19，15 次重启。

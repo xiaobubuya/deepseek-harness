@@ -1,0 +1,131 @@
+name: Deploy Harness CLI
+
+'on':
+  push:
+    branches: [deploy-muyaya-node, main, master]
+    paths:
+      - 'apps/cli/**'
+      - 'packages/**'
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: 120.48.86.101
+  SERVER_USER: root
+  NODE_VERSION: '22'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@9 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build native system
+        run: pnpm run build:native-system
+
+      - name: Build CLI
+        run: |
+          cd apps/cli
+          pnpm run build
+
+      - name: Package
+        run: |
+          mkdir -p /tmp/package
+          cd apps/cli
+          cp -r lib /tmp/package/
+          cp package.json /tmp/package/
+          cd /tmp/package
+          tar czf /tmp/harness-cli.tar.gz .
+          echo "Artifact size: $(du -h /tmp/harness-cli.tar.gz)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-cli
+          path: /tmp/harness-cli.tar.gz
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: harness-cli
+          path: /tmp/
+
+      - name: Deploy to server
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y sshpass
+
+          # Upload package
+          sshpass -e scp -o StrictHostKeyChecking=no \
+            /tmp/harness-cli.tar.gz \
+            "${SERVER_USER}@${SERVER_HOST}:/opt/"
+
+          # Deploy on server
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "set -e
+             cd /opt
+             rm -rf harness-cli
+             mkdir -p harness-cli
+             tar xzf harness-cli.tar.gz -C harness-cli
+             rm -f harness-cli.tar.gz
+             cd /opt/harness-cli
+             npm install --production
+             ln -sf /opt/harness-cli/lib/bin.js /usr/local/bin/dsh
+             chmod +x /usr/local/bin/dsh
+             dsh --version || echo 'dsh version check failed'
+             pm2 restart ai-agent-server 2>/dev/null || true
+             echo 'Harness CLI deployed at $(date)'"
+
+      - name: Health check
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_HOST: ${{ env.SERVER_HOST }}
+          SERVER_USER: ${{ env.SERVER_USER }}
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass > /dev/null 2>&1
+
+          echo "Waiting for Harness CLI..."
+          for i in 1 2 3 4 5 6; do
+            if sshpass -e ssh -o StrictHostKeyChecking=no \
+              "${SERVER_USER}@${SERVER_HOST}" \
+              "dsh --version" 2>/dev/null; then
+              echo ""
+              echo "Health check passed!"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 5s..."
+            sleep 5
+          done
+
+          echo "FAILED: Health check did not pass"
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" "ls -la /usr/local/bin/dsh"
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            "${SERVER_USER}@${SERVER_HOST}" "ls -la /opt/harness-cli/"
+          exit 1

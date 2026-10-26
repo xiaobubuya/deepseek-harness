@@ -18,8 +18,9 @@
                               │
                               ▼
                     ┌───────────────────┐
-                    │  Cloudflare Tunnel│
-                    │  (trycloudflare)  │
+                    │ Cloudflare Tunnel │
+                    │ ai.muyaya.world   │
+                    │ 命名隧道（永久）  │
                     │  HTTPS ✅          │
                     └───────────────────┘
                               │
@@ -45,7 +46,11 @@
               └───────────┘      └───────────┘
 ```
 
-**隧道 URL**: `https://shops-voip-storage-click.trycloudflare.com`
+**隧道地址**: `https://ai.muyaya.world`（命名隧道，2026-10-27 起）
+
+> 旧文档这里写的是 `shops-voip-storage-click.trycloudflare.com`。
+> 那是**匿名隧道**，每次 `cloudflared` 重启就换域名，所以早就失效了——
+> 前端写死它，就成了「悬浮球显示已断开」的直接原因。
 
 ### 目标架构（备案完成后）
 
@@ -72,15 +77,19 @@
 
 ## 当前问题
 
-### 1. Mixed Content 阻断（主要问题）
+### 1. Mixed Content 阻断（已解决）
 
 | 组件 | 协议 | 状态 |
 |------|------|------|
 | GitHub Pages 前端 | HTTPS | ✅ |
-| 服务器 API/WebSocket | HTTP | ❌ |
-| WebSocket 连接 | ws:// | ❌ 被浏览器阻止 |
+| `ai.muyaya.world`（经隧道） | HTTPS / WSS | ✅ 2026-10-27 起 |
+| 服务器 API/WebSocket 直连 | HTTP | ⚠️ 仍不可用，但已经不依赖它 |
 
 **原因**：浏览器安全策略阻止 HTTPS 页面加载 HTTP 资源。
+
+**为什么现在不是问题**：前端只跟 `https://ai.muyaya.world` 说话，
+由 Cloudflare 边缘终结 TLS，隧道是服务器主动外连，链路全程 HTTPS/WSS。
+**不要再往代码里写 `http://120.48.86.101`。**
 
 ### 2. 域名备案未完成
 
@@ -120,9 +129,10 @@
 | 实际在用的 | 端口 | 说明 |
 |---|---|---|
 | `muyaya.world` | —— | GitHub Pages，本仓库无关 |
+| `ai.muyaya.world` | —— | Cloudflare → 命名隧道 `muyaya-ai` → `:3000`，systemd 托管 |
 | `localhost:3000/api/health` | 3000 | AI Agent Server，`{"status":"ok"}` |
 | `localhost:3001/api/health` | 3001 | Muyaya API，`{"ok":true}` |
-| cloudflared x2 | —— | `--url http://localhost:3000` / `:3001`，各自一个 `*.cfargotunnel.com` |
+| cloudflared（旧，待清理） | —— | 两个匿名隧道进程，一个指 `:3000`、一个指 `:3001` |
 
 `muyaya-api` 的 `.env` 关键项：`ALLOWED_ORIGINS=https://muyaya.world,https://xiaobubuya.github.io`、
 `AGENT_BASE_URL=http://127.0.0.1:3000`、`AGENT_API_KEY=bubu`。
@@ -209,41 +219,74 @@ certbot --nginx -d muyaya.world
 
 ---
 
-### 方案 B：Cloudflare Tunnel（当前方案 ✅）
+### 方案 B：Cloudflare 命名隧道（当前方案 ✅）
 
-**状态**：✅ 已部署，正常运行
+**状态**：✅ 2026-10-27 部署，systemd 托管，开机自启
 
-**当前隧道 URL**：
+**地址**：`https://ai.muyaya.world`
+**端点**：`/api/health`、`/api/parse`、`/ws?key=bubu`（WSS 可用）
+
+| 项 | 值 |
+|---|---|
+| 隧道名 / id | `muyaya-ai` / `89c07fac-0db4-463e-8e01-dddee0f2cc94` |
+| 配置 | `/etc/cloudflared/config.yml` |
+| 凭据 | `/root/.cloudflared/cert.pem`、`/root/.cloudflared/89c07fac-….json` |
+| 服务 | `systemctl status cloudflared` |
+
+`/etc/cloudflared/config.yml`：
+
+```yaml
+tunnel: 89c07fac-0db4-463e-8e01-dddee0f2cc94
+credentials-file: /root/.cloudflared/89c07fac-0db4-463e-8e01-dddee0f2cc94.json
+
+ingress:
+  - hostname: ai.muyaya.world
+    service: http://localhost:3000
+  - service: http_status:404
 ```
-https://shops-voip-storage-click.trycloudflare.com
-```
 
-**端点**：
-- API: `https://shops-voip-storage-click.trycloudflare.com/api/health`
-- WebSocket: `wss://shops-voip-storage-click.trycloudflare.com/ws?key=bubu`
+为什么这样能绕开备案：`muyaya.world` 的 NS 在 Cloudflare，橙云代理后流量
+终点是 CF 边缘，隧道是服务器**主动外连**，没有入站连接打到百度云 IP。
+`api.muyaya.world` 是 DNS 直指 `120.48.86.101`，才会被以「未备案」403。
 
-**服务器端配置**：
+#### 授权流程（一次性，踩过的坑）
+
 ```bash
-# 安装位置
-/usr/local/bin/cloudflared
-
-# 启动命令
-nohup cloudflared tunnel --url http://localhost:3000 --no-autoupdate \
-  > /var/log/cloudflared.log 2>&1 &
-
-# 查看日志
-tail -f /var/log/cloudflared.log
-
-# 重启隧道
-pkill cloudflared
-nohup cloudflared tunnel --url http://localhost:3000 --no-autoupdate \
-  > /var/log/cloudflared.log 2>&1 &
+cloudflared tunnel login        # 打印一个 dash.cloudflare.com/argotunnel 链接
 ```
 
-**优点**：不改 DNS，不需要备案，HTTPS WebSocket
-**缺点**：临时隧道，URL 可能变化，依赖第三方服务
+- 链接里的 callback 是 **Cloudflare 自己的** `login.cloudflareaccess.org`，
+  不是 `localhost`，所以在任意电脑的浏览器点都行，不需要端口转发。
+- **必须在链接有效期内点完**（约 10 分钟）。等太久这个进程会超时退出，
+  并提示「浏览器会下载证书，请手动放到 `/root/.cloudflared/cert.pem`」——
+  实测那次浏览器并没有真的下载，白等 45 分钟。超时就重新生成，别猜。
+- 成功后 `/root/.cloudflared/cert.pem` 出现（约 282 字节，开头
+  `-----BEGIN ARGO TUNNEL TOKEN-----`）。
 
-**注意**：这是临时方案，备案完成后需要切换到方案 A
+```bash
+cloudflared tunnel create muyaya-ai
+cloudflared tunnel route dns muyaya-ai ai.muyaya.world
+cloudflared service install          # 生成 systemd unit，读 /etc/cloudflared/config.yml
+systemctl enable --now cloudflared
+```
+
+验证（两条都要看，缺一条说明链路有问题）：
+
+```bash
+curl -s https://ai.muyaya.world/api/health          # → {"status":"ok"}
+curl -i  https://ai.muyaya.world/ws?key=bubu \
+     -H "Connection: Upgrade" -H "Upgrade: websocket" \
+     -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
+# → HTTP/1.1 101 Switching Protocols
+```
+
+> 本机 DNS 缓存可能比公共 DNS 慢几分钟。验证时如果解析不到，
+> 用 `--resolve ai.muyaya.world:443:<CF边缘IP>` 绕过本地解析器，别误判成隧道坏了。
+
+**优点**：地址永久稳定，不改 DNS，不需要备案，HTTPS + WSS
+**缺点**：依赖 Cloudflare；隧道挂了整条 AI 链路就断
+
+**注意**：这是长期方案，不是临时补丁。备案完成后**也没有必要**切回方案 A。
 
 ---
 
@@ -289,18 +332,27 @@ curl -X POST http://120.48.86.101:3000/api/chat \
 ### ⏳ 进行中
 - [ ] 等待域名备案完成
 
-### 隧道 URL
+### 隧道地址
+
 ```
-https://shops-voip-storage-click.trycloudflare.com
+https://ai.muyaya.world
 ```
 
-### 使用隧道 URL 的文件
-| 文件 | 用途 |
-|------|------|
-| `app.js` | 主站 API（相册、登录） |
-| `common.js` | 共享 API 模块 |
-| `ai-widget.js` | AI 聊天悬浮组件 |
-| `ai-agent.html` | AI 聊天独立页面 |
+### 各文件当前写死的是哪个后端地址（2026-10-27 实测）
+
+| 文件 | 写死的地址 | 状态 |
+|------|------------|------|
+| `ai-widget.js:20` | `https://ai.muyaya.world` | ✅ 已修好 |
+| `app.js:20` | `https://main-lawsuit-sewing-pregnancy.trycloudflare.com` | ❌ 死（10-25 09:49 关掉的旧匿名隧道） |
+| `common.js:12` | 同上 | ❌ 死 |
+| `ai-agent.html:181` | `https://shops-voip-storage-click.trycloudflare.com` | ❌ 死 |
+| `share.js:13` | `https://api.muyaya.world` | ❌ 403（DNS 直指服务器，未备案） |
+
+**注意**：`app.js` 的 `PROD_API` 只在 `location.hostname` 不是本地时生效，
+且**没有 fallback**。所以线上 `muyaya.world` 的登录/相册接口现在是断的——
+这不是新问题，是同一个「写死匿名隧道地址」的根因，只是没人报过。
+要修就是把四处都换成 `https://ai.muyaya.world`（`share.js` 同理），
+换完必须实测登录、取图、分享、AI 对话四条链路。
 
 ### 备案完成后切换计划
 
@@ -350,15 +402,22 @@ const WS_URL = 'wss://muyaya.world/ws?key=bubu';
 ## 部署命令
 
 ```bash
-# Muyaya API
-git push origin deploy-muyaya-node
-
-# AI Agent Server
-git push origin deploy-muyaya-node
-
-# 前端
+# 前端（GitHub Pages，30~60 秒生效）
 git push origin main
+
+# 下面这条会同时触发两个工作流，不要无脑推
+git push origin deploy-muyaya-node
 ```
+
+⚠️ 推 `deploy-muyaya-node` 会触发 `deploy-ai-agent.yml` **和**
+`deploy-muyaya-api-node.yml`。后者没有 `paths` 过滤、缺 `concurrency`
+和 `timeout-minutes`，历史表现是约 2h20m 后失败（失败点在 frontend sync，
+在 `pm2 delete muyaya-api` 之前，所以没伤到生产）。见「未完成事项 1」。
+
+⚠️ **`/api/parse` 目前不在 CI 覆盖范围内。** 服务器上的 `ai-agent-server`
+是手工部署的，推 `deploy-muyaya-node` 只会用**该分支上的源码**重新构建部署。
+`ci/harness-cli` 还没合进去，所以在合并之前，推 `deploy-muyaya-node`
+会把这个手工部署的 `/api/parse` **覆盖掉**。合并前别推这条分支。
 
 ## 联系信息
 
@@ -386,34 +445,40 @@ git push origin main
   `.github/workflows/deploy-muyaya-api-node.yml`），再加 `concurrency`，
   最后合 `ci/harness-cli`。
 
-### 2. `/api/parse` 没跑过真实请求
+### 2. `/api/parse` 已手工部署，但仍未走 CI
 
 commit `7ee651c070`。`apps/ai-agent-server/src/api/parse.ts` +
 `src/core/studio-prompts.ts` + `index.ts` 路由注册。
 
-- 没发过真实请求。服务器上 `/opt/ai-agent-server/` 跑的还是旧代码，
-  `/api/parse` 在线上不存在。
+- ✅ 2026-10-27 已部署到服务器并实测通过：
+  `POST /api/parse`（`X-API-Key: bubu`，`{"message":"变成黑白的","tool":"photocraft"}`）
+  → `{"commands":[{"key":"uSaturation","value":-1}],...}`；不带 key → 401。
+- ⚠️ **是手工部署的，不是 CI。** 服务器 `/opt/ai-agent-server` 不是 git 仓库，
+  做法是上传两个 `.ts`、在 `src/index.ts` 插两行、装 `typescript@5.8.3`、
+  `npx tsc`、`pm2 restart ai-agent-server`。
+  回滚点：`dist.bak-20261027-001238`、`src/index.ts.bak-20261027-001238`、
+  `package.json.bak-20261027-001238`。
+  线上内容和仓库 commit 一致，但**没有 CI 保证以后也一致**——接上 CI 之前别手改。
 - LightCraft 和 PhotoCraft 目前共用同一份 `STUDIO_SYSTEM_PROMPT`，
   LightCraft 专属提示词没写。`parse.ts` 里的 `cliTool` 只用在日志和返回值里。
 - 行为细节：值钳到 `[-1, 1]`；`ALL_STUDIO_KEYS` 之外的 key 静默丢弃（不报错）。
 - 注意 `parse.ts` 自己的 JSON 解析是包了 try/catch 的，
   下面第 4 条那个裸 `SyntaxError` 只存在于 `llm-parser-fallback.ts`。
+- ❗ **返回值用的是带 `u` 前缀的键**（`uExposure`/`uSaturation`/`uTemp`/`uHslSat`…），
+  前端 `ai-widget.js` 的映射表用的是无前缀名字，命中不了。
+  这是「显示已应用但图片不变」的原因之一，详见前端仓库 `docs/AI_WIDGET.md` 第七节。
 
-### 3. `deploy-cloudflared.yml` 从未运行过
+### 3. `deploy-cloudflared.yml` 已经不需要了
 
-commit `1c5603a524`。文件本身是新增的，之前一直是未跟踪状态。
+commit `1c5603a524`。它当年的用途是「起一个匿名隧道并把 URL 打印出来」，
+现在改为命名隧道 + systemd（见「方案 B」），URL 永久固定，不需要再生成。
 
-- 触发方式：`workflow_dispatch` 手动。push 到 `deploy-muyaya-node` 时
-  只有改动该文件自身才会触发（`paths` 只写它自己）。
-- 已修的是能证明的错误：原来 `echo "TUNNEL_URL=..." >> $GITHUB_ENV`
-  写在 ssh 单引号命令内部，那行在**服务器上**执行，服务器上不存在
-  `GITHUB_ENV`，所以下一步 `$TUNNEL_URL` 永远是空的，summary 里只有空白 URL。
-  现在 URL 落到服务器 `/opt/cloudflared-url.txt`，runner 侧 ssh 读回再写 `GITHUB_ENV`。
-- 未验证的部分：`wget .../releases/latest/download/cloudflared-linux-amd64`、
-  `cloudflared tunnel --url http://localhost:3000 --no-autoupdate` 起的匿名隧道、
-  `grep -oP "https://[a-z0-9-]+\.cfargotunnel\.com"` 抓 URL。
-- 跑它之前记得先 `pkill cloudflared` 的后果想清楚：这台机器上现在跑着两个
-  指向 3000/3001 的隧道，第 42 行 `pkill cloudflared 2>/dev/null || true` 会**一起杀掉**。
+- 这个工作流**从未运行过**，也不建议跑：它第 42 行有
+  `pkill cloudflared 2>/dev/null || true`，会**把命名隧道的服务一起杀掉**。
+- 服务器上现在跑着 systemd 的 `cloudflared.service`（命名隧道）+
+  两个遗留的匿名隧道进程。要清理遗留的，用 `ps -eo pid,args | grep cloudflared`
+  看清目标再单独 kill，**不要 `pkill cloudflared`**。
+- 建议直接删掉这个 workflow，或者改成「读 `systemctl status cloudflared`」的检查。
 
 ### 4. 两个运行时 bug 没碰
 
@@ -436,3 +501,41 @@ commit `1c5603a524`。文件本身是新增的，之前一直是未跟踪状态�
 - 没有复现步骤，只有症状记录。查的话直接上服务器看
   `pm2 logs muyaya-api`。
 - 该服务现在健康：`:3001/api/health` → `{"ok":true}`，pm2 id 19，15 次重启。
+
+### 5. 前端四处写死的后端地址 + 悬浮球两个 bug（2026-10-27 记录，未修）
+
+**地址问题**：`app.js:20`、`common.js:12`、`ai-agent.html:181`、`share.js:13`
+四处指向的都不是 `ai.muyaya.world`，其中前三个是**早就关掉的匿名隧道域名**，
+`share.js` 指向未备案的 `api.muyaya.world`（403）。所以线上相册的登录、
+取图、分享接口其实是断的，只是因为没人报过所以一直没发现。
+清单和状态见上文「各文件当前写死的是哪个后端地址」。
+
+**悬浮球 bug**：在 PhotoCraft 里输入「变成黑白的」，面板显示
+「✅ 已应用到编辑器，可撤销」，但图片没有任何变化。两个独立原因：
+
+1. `ai-widget.js:540` 漏了 `await` —— `executeCommands` 声明为 `async`，
+   不 `await` 得到的是 Promise，恒为真值，所以**永远报成功**。
+2. 服务端返回的键是 `uExposure`/`uSaturation`/`uTemp`/`uHslSat`，
+   而 `mapToPhotoCraftCommand` 的映射表用无前缀名字（`exposure`/`saturation`/
+   `temperature`），命中不了 → 命令静默跳过。注意还有额外错位：
+   `uTemp`≠`temperature`、`uHslSat`≠`saturation`、`uVignette`≠`vignetteAmount`、
+   `uSharpness`≠`sharpening`，所以要真的补一张对照表，不是去前缀了事。
+
+细节和修法在前端仓库 `docs/AI_WIDGET.md` 第七节。**修完必须实测**
+（黑白、提亮、加对比度各一次，看图片真的变），别只看面板文字。
+
+---
+
+## 本仓库文档清理（2026-10-27）
+
+删掉了两份**基于过时调研结论**的文档：
+
+| 删掉的 | 为什么 |
+|---|---|
+| `docs/AI_WIDGET_BROWSER_EXEC.md` | 结论是「PhotoCraft WASM 没有命令 API」，打完 AI Bridge 补丁后已经不成立 |
+| `docs/AI_WIDGET_INTEGRATION.md` | 同上，写的是 patch 之前的集成方案，且引用了已移除的 `studio.html` |
+
+AI 悬浮球的权威文档现在只有一份：
+前端仓库 `xiaobubuya/xiaobubuya.github.io` 的 `docs/AI_WIDGET.md`。
+
+（删掉的内容在 git 历史里，`git log --all -- docs/AI_WIDGET_BROWSER_EXEC.md` 能找回。）

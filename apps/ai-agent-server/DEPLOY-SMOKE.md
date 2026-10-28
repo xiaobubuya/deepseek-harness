@@ -4,7 +4,8 @@
 「故障对照表」排查，再决定是否回滚。
 
 > 本文是操作清单，不是设计文档。事故根因与修复过程见前端仓库
-> `openspec/changes/archive/legacy-docs/SERVER-OPS-2026-10-28.md`。
+> `openspec/changes/archive/legacy-docs/SERVER-OPS-2026-10-28.md`；
+> 视觉定位设计见 `docs/DESIGN-vision-localization.md`。
 
 ## 一、环境自检（复制整段执行）
 
@@ -66,7 +67,29 @@ done
 三条分别验证：**变换类**（skill 查询是否生效）、**多命令 + 默认参数**（sanitize 是否误杀）、
 **滤镜类**（新命令是否透传）。
 
-## 三、端到端（chat 链路真执行并出图）
+## 三、L2 视觉定位（带画布，需要定位的需求）
+
+视觉链路：前端画布 → `imageBase64` → 视觉摘要 → 定位命令（`select.rect` / `select.object`）。
+
+```bash
+IMG=$(ls /opt/ai-agent-server/uploads/*.png | head -1)
+B64=$(base64 -w0 "$IMG")
+python3 -c "import json,sys;print(json.dumps({'message':'把照片上半部分调暗','imageBase64':'data:image/png;base64,'+sys.argv[1],'docSize':{'w':100,'h':100}}))" "$B64" > /tmp/l2.json
+curl -s -X POST http://localhost:3000/api/parse \
+  -H "Content-Type: application/json" -H "X-API-Key: bubu" \
+  --data-binary @/tmp/l2.json --max-time 300
+```
+
+### 预期
+
+- 日志出现 `[Parse] 视觉摘要: 主体=...` 与 `[Harness] 已注入视觉摘要`
+- 返回命令含 `select.rect`（区域）或 `select.object`（对象）+ 后续调整命令
+- **不得**出现 `[Harness] final 不是合法 JSON`（出现即 JSON 提取逻辑退化）
+
+> `select.object` 对卡通/平坦区块可能只选中一小块，所以摘要里把 `select.rect` 列为推荐、
+> `select.object` 列为备选。
+
+## 四、端到端（chat 链路真执行并出图）
 
 ```bash
 IMG=$(basename $(ls /opt/ai-agent-server/uploads/*.png | head -1))
@@ -76,7 +99,7 @@ curl -s -X POST http://localhost:3000/api/chat \
   -d "{\"message\":\"把照片旋转180度\",\"imageFilename\":\"$IMG\"}"; echo
 
 sleep 60
-pm2 logs ai-agent-server --lines 80 --nostream | grep -E 'Harness|completed|失败' | tail -5
+pm2 logs ai-agent-server --lines 80 --nostream | grep -E 'Harness|completed|失败|command\(s\) applied' | tail -5
 ls -lat /opt/ai-agent-server/processed | head -3
 ```
 
@@ -84,9 +107,10 @@ ls -lat /opt/ai-agent-server/processed | head -3
 
 - 日志出现 `[Harness] 开始解析指令` → `[Harness] agent 完成` → `Task ... completed successfully`
 - `processed/` 出现新的 `*_result*.png`
+- `N command(s) applied` 的 N **不应为 0**（为 0 说明命令没生效，产物与原图一致）
 - **不应**出现 `harness 失败，回退单次 LLM`
 
-## 四、故障对照表
+## 五、故障对照表
 
 | 症状 | 根因 | 修复 |
 |---|---|---|
@@ -97,9 +121,12 @@ ls -lat /opt/ai-agent-server/processed | head -3
 | 图片执行失败 / 鉴权错误 | `PHOTOCRAFT_SERVE_TOKEN` 丢失或为空 | 部署脚本应从 `photocraft-serve.token` 复用 |
 | harness 回「无法用现有命令表达」 | skill 未加载，或 agent 查不到命令 | 检查 skill 预加载 + `DSH_PERMISSION_MODE=danger-full-access` |
 | 日志「丢弃了 …(参数无效)」 | sanitize 把空参数命令误杀 | 确认 parse.ts 未恢复「参数全空就丢」逻辑 |
+| `[Harness] final 不是合法 JSON` | JSON 提取用了贪婪正则（跨多个块） | 应使用 `utils/json-extract.ts` 的括号平衡扫描 |
+| `0 command(s) applied` 但任务成功 | 命令为空，或全部被 sanitize 丢弃 | 查上一条日志定位；确认提取与校验未退化 |
+| L2 定位偏 / 选错区域 | 视觉 bbox 粗估，或 `select.object` 只抓到小块 | 改用 `select.rect`；提示用户可手动微调 |
 | `LLM_API_URL` 末尾多斜杠 | secret 值自带 | 实测不影响；介意可去掉 |
 
-## 五、回滚
+## 六、回滚
 
 ```bash
 # 代码回滚：revert 对应 commit 后重新 push（会再触发部署）

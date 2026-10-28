@@ -491,3 +491,63 @@ const vision = req.body.imageBase64
 2. 打开一张跨域图片 → 断言不抛未捕获异常，退回 null。
 3. 发 `/api/parse` 带 `imageBase64` → 断言返回的命令含 `select.object` 或 `select.rect`。
 4. 不带 `imageBase64` → 断言行为与现状完全一致。
+
+
+---
+
+# L2 实现后的实测结果与两个坑
+
+## 已验证通过
+
+| 场景 | 结果 |
+|---|---|
+| `parse` 带 `imageBase64`（上半部分调暗） | `select.rect {x:0,y:0,width:100,height:50}` + `brightnessContrast` ✓ |
+| `parse` 带 `imageBase64`（左耳变蓝） | `select.rect {x:8,y:2,width:24,height:26}` + `edit.fill` ✓ |
+| `chat` 带 `imageFilename`（左耳变蓝） | 日志 `[Chat] 视觉摘要: 主体=猪头` → `2 command(s) applied` ✓ |
+| 像素校验（chat 结果） | 左耳 `[255,170,170]`→`[170,170,255]`，右耳/中央不变，变化像素 6.7% ✓ |
+| 纯文字回归 | 旋转/黑白模糊等行为不变 ✓ |
+
+视觉摘要实测耗时约 15s（含缩图 + 模型调用），有 sha256 缓存（同图第二次跳过）。
+
+## 坑 1：`select.object` 对卡通/平坦区块不可靠
+
+实测「只把猪的左耳朵变成蓝色」，agent 按摘要给了
+`select.object {point:[12,12]}`，引擎返回：
+
+```
+{"bounds":[11,11,3,3]}   # 只选中 3x3 小块，而不是整只耳朵
+```
+
+同一需求改用 `select.rect`（bbox）后输出覆盖正常（7276B → 6689B）。
+
+**结论**：摘要里把 `select.rect` 列为推荐、`select.object` 列为备选，
+并写明该局限。Object Finder 依赖图像边缘特征，卡通/纯色区块容易失效。
+
+## 坑 2：贪婪正则导致 chat 链路 0 命令
+
+首次实现后 chat 请求出现：
+
+```
+[Harness] final 不是合法 JSON，按空命令处理
+[LLM-Parser] harness 未产出命令，回退单次 LLM
+photocraft-cli serve: 0 command(s) applied      # 产物与原图像素完全一致
+```
+
+根因是 `text.match(/\{[\s\S]*\}/)`：模型输出了多个 JSON 块（方案说明 + 最终答案），
+贪婪匹配从第一个 `{` 吃到最后一个 `}`，把中间文本括进来 → `JSON.parse` 失败。
+
+修复为 `src/utils/json-extract.ts`：
+
+- 扫描**所有**括号平衡的顶层对象（跳过字符串内的括号）
+- **优先返回含 `commands` 字段的那个**（模型常先给示例、后给答案）
+- 代码块 ```json 优先
+- `harness-agent` / `llm-parser` / `api/parse` 三处统一使用
+
+修复后同一请求 `2 command(s) applied`，像素校验通过。
+
+## 遗留
+
+- 视觉摘要不含颜色信息，agent 有时会自行猜颜色（如 replaceColor 的取样值）。
+  后续可在摘要里加 `palette`。
+- 每次 L2 请求多一次 ~15s 视觉调用（有缓存缓解）。
+- `select.rect` 是矩形，会包含少量背景；精细轮廓仍属 L3。

@@ -84,34 +84,46 @@ jobs:
             /tmp/ai-agent-server.tar.gz \
             "${SERVER_USER}@${SERVER_HOST}:/opt/ai-agent-server/"
 
+          # secret 作为远程命令的环境变量前缀传入：heredoc 用单引号避免本地误展开，
+          # 否则 $LLM_API_KEY / $API_KEY 在远程为空（曾导致 .env 的 key 为空、API_KEY 落默认值）
           sshpass -e ssh $SSH_OPTS \
-            "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "LLM_API_URL='$LLM_API_URL' LLM_MODEL='$LLM_MODEL' API_KEY='$API_KEY' LLM_API_KEY='$LLM_API_KEY' bash -s" << 'REMOTE_SCRIPT'
           set -e
           cd /opt/ai-agent-server
           tar xzf ai-agent-server.tar.gz
           rm -f ai-agent-server.tar.gz
           mkdir -p uploads processed thumbnails logs temp
 
-          # Setup Harness CLI
-          if [ -d "harness" ]; then
-            ln -sf /opt/ai-agent-server/harness/.bin/dsh /usr/local/bin/dsh 2>/dev/null
-            ln -sf /opt/ai-agent-server/harness/.bin/dsh /opt/ai-agent-server/.bin-dsh 2>/dev/null
-            if [ -f /usr/local/bin/dsh ]; then
-              echo "Harness CLI ready"
-              /usr/local/bin/dsh --version 2>&1 || echo "dsh version check failed (ok, fallback available)"
-            fi
+          # Setup Harness CLI：优先用全局完好 dsh，别覆盖成可能缺依赖的 harness 副本
+          GLOBAL_DSH=""
+          for c in /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js /usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js; do
+            if [ -f "$c" ] && node "$c" --version >/dev/null 2>&1; then GLOBAL_DSH="$c"; break; fi
+          done
+          if [ -n "$GLOBAL_DSH" ]; then
+            ln -sf "$GLOBAL_DSH" /usr/local/bin/dsh
+            echo "Harness CLI -> $GLOBAL_DSH"
+            /usr/local/bin/dsh --version 2>&1 || echo "dsh version check failed"
+          elif [ -f /opt/ai-agent-server/harness/.bin/dsh ]; then
+            ln -sf /opt/ai-agent-server/harness/.bin/dsh /usr/local/bin/dsh
+            echo "Harness CLI -> harness 副本"
           else
-            echo "Harness not bundled"
+            echo "Harness not available"
           fi
 
           # Env
+          # API_KEY 保留服务器现有值：前端 ai-widget.js 硬编码 'bubu'，
+          # 被 secret/默认值覆盖会让前端直接 401
+          EXISTING_API_KEY="$(grep '^API_KEY=' .env 2>/dev/null | cut -d= -f2- || echo '')"
+          API_KEY="${EXISTING_API_KEY:-${API_KEY}}"
+          [ -z "$API_KEY" ] && API_KEY="muyaya-secret-key-2026"
           LLM_API_URL="${LLM_API_URL}"
           [ -z "$LLM_API_URL" ] && LLM_API_URL="https://token.sensenova.cn/v1"
           LLM_MODEL="${LLM_MODEL}"
           [ -z "$LLM_MODEL" ] && LLM_MODEL="sensenova-6.8-flash-lite"
-          API_KEY="${API_KEY}"
-          [ -z "$API_KEY" ] && API_KEY="muyaya-secret-key-2026"
-          LLM_API_KEY="${LLM_API_KEY}"
+          # 同理：secret 未传时保留服务器已有 key，避免再次把 LLM_API_KEY 置空
+          EXISTING_LLM_KEY="$(grep '^LLM_API_KEY=' .env 2>/dev/null | cut -d= -f2- || echo '')"
+          LLM_API_KEY="${LLM_API_KEY:-$EXISTING_LLM_KEY}"
           # PhotoCraft serve gateway token 复用服务器现有文件（tar 解包不覆盖它）
           PHOTOCRAFT_SERVE_TOKEN="$(cat /opt/ai-agent-server/photocraft-serve.token 2>/dev/null || echo '')"
 

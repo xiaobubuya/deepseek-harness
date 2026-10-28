@@ -11,6 +11,9 @@ AI Agent Server 用于 PhotoCraft - 通过自然语言对话驱动 PhotoCraft CL
 - **安全鉴权**：API Key 认证
 - **自动部署**：GitHub Actions CI/CD
 
+> 部署后必须走 [DEPLOY-SMOKE.md](./DEPLOY-SMOKE.md) 的自测清单（健康检查、`.env` 关键项、
+> dsh 版本、skill 预加载、三类命令解析、chat 端到端出图）。
+
 ## 技术栈
 
 | 组件 | 技术 |

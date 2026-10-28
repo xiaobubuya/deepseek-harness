@@ -41,6 +41,9 @@ jobs:
           cp apps/ai-agent-server/package.json /tmp/package/
           cp apps/ai-agent-server/ecosystem.config.cjs /tmp/package/
           cp apps/ai-agent-server/.env.example /tmp/package/
+          # dsh skills：部署时预加载到 ~/.dsh/skills，harness agent 按需加载
+          # （photocraft-commands 让 agent 自己查引擎 920 个命令，避免塞满 prompt）
+          cp -r apps/ai-agent-server/dsh-skills /tmp/package/
           # 不再打包上传 harness：服务器 /opt/ai-agent-server/harness 已有 dsh
           # （161MB 大包经国内服务器 scp 会半开挂死，且业务代码仅 332KB）
           cd /tmp/package
@@ -94,6 +97,18 @@ jobs:
           tar xzf ai-agent-server.tar.gz
           rm -f ai-agent-server.tar.gz
           mkdir -p uploads processed thumbnails logs temp
+
+          # 预加载 dsh skills（photocraft-commands 等）
+          if [ -d "dsh-skills" ]; then
+            mkdir -p /root/.dsh/skills
+            for d in dsh-skills/*/; do
+              [ -d "$d" ] || continue
+              name=$(basename "$d")
+              mkdir -p "/root/.dsh/skills/$name"
+              [ -f "$d/SKILL.md" ] && cp -f "$d/SKILL.md" "/root/.dsh/skills/$name/SKILL.md"
+            done
+            echo "dsh skills: $(ls /root/.dsh/skills 2>/dev/null | tr '\n' ' ')"
+          fi
 
           # Setup Harness CLI：优先用全局完好 dsh，别覆盖成可能缺依赖的 harness 副本
           GLOBAL_DSH=""

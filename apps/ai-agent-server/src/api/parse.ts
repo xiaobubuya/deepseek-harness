@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { PHOTOCRAFT_COMMANDS, PHOTOCRAFT_SYSTEM_PROMPT, type ParamSpec } from '../core/photocraft-prompts.js'
+import { getEngineCommandIds } from '../core/engine-commands.js'
 import { config } from '../config.js'
 import { logger } from '../utils/logger.js'
 import { callHarnessAgent } from '../core/harness-agent.js'
@@ -53,7 +54,7 @@ interface SanitizeResult {
  * 按 PHOTOCRAFT_COMMANDS 目录过滤并收敛模型（harness 或单次 LLM）产出的原生命令。
  * 目录里没有的 id、参数全丢光的命令一律剔除并记录，绝不静默放过。
  */
-function sanitizeCommands(parsedCommands: unknown): SanitizeResult {
+async function sanitizeCommands(parsedCommands: unknown): Promise<SanitizeResult> {
   const valid: NativeCommand[] = []
   const rejected: string[] = []
 
@@ -61,14 +62,25 @@ function sanitizeCommands(parsedCommands: unknown): SanitizeResult {
     return { valid, rejected }
   }
 
+  const engineIds = await getEngineCommandIds()
+
   for (const raw of parsedCommands) {
     if (!raw || typeof raw !== 'object') continue
     const cmd = raw as { id?: unknown; params?: unknown }
     const id = typeof cmd.id === 'string' ? cmd.id : ''
     const spec = PHOTOCRAFT_COMMANDS[id]
+    // 命令是否真实存在：优先用引擎全量命令集（920 个）校验，
+    // 引擎不可用时退化为只认内置的 image.adjustments.* 清单。
+    const known = engineIds ? engineIds.has(id) : !!spec
+
+    if (!known) {
+      rejected.push(id || '(空 id)')
+      continue
+    }
 
     if (!spec) {
-      rejected.push(id || '(空 id)')
+      // 新增类命令（变换/滤镜/图层等）：参数原样透传，由引擎自身校验。
+      valid.push({ id, params: (cmd.params && typeof cmd.params === 'object' ? cmd.params : {}) as Record<string, unknown> })
       continue
     }
 
@@ -150,7 +162,7 @@ parse.post('/', async (req: Request, res: Response) => {
     let raw: string | undefined
 
     if (parsed && Array.isArray(parsed.commands)) {
-      const s = sanitizeCommands(parsed.commands)
+      const s = await sanitizeCommands(parsed.commands)
       valid = s.valid
       rejected = s.rejected
       explanation = parsed.explanation || ''
@@ -167,7 +179,7 @@ parse.post('/', async (req: Request, res: Response) => {
       })
       const content = completion.choices[0]?.message?.content || ''
       const p = extractParsed(content)
-      const s = sanitizeCommands(p.commands)
+      const s = await sanitizeCommands(p.commands)
       valid = s.valid
       rejected = s.rejected
       explanation = p.explanation || ''

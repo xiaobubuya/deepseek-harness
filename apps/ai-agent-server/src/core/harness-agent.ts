@@ -17,7 +17,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
-import { PHOTOCRAFT_SYSTEM_PROMPT } from './photocraft-prompts.js';
+import { PHOTOCRAFT_AGENT_PROMPT } from './photocraft-prompts.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -86,15 +86,12 @@ export async function callHarnessAgent(message: string, onThinking?: (t: string)
   onThinking?.('Harness agent 正在分析指令...');
   logger.info('[Harness] 开始解析指令(单次调用，支持多步规划)');
 
-  // 任务正文：复用 PHOTOCRAFT_SYSTEM_PROMPT（命令目录 + 强约束），让 agent 只输出命令 JSON。
+  // 任务正文：不带硬编码命令清单，要求 agent 用 photocraft-cli commands 自行按需查询
+  // 引擎的 920 个真实命令（全量塞 prompt 约 25K tokens，不现实）。
   const task = [
-    '你是照片编辑命令生成器。把用户的中文/英文修图需求转换为 PhotoCraft 原生命令 JSON。',
-    '',
-    PHOTOCRAFT_SYSTEM_PROMPT,
+    PHOTOCRAFT_AGENT_PROMPT,
     '',
     `用户需求：${message}`,
-    '',
-    '只输出上面的 JSON 命令格式，不要调用任何工具、不要读取任何文件、不要输出 markdown 或额外解释。',
   ].join('\n');
 
   const patchPath = join(tmpdir(), `dsh-pi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.yml`);
@@ -111,6 +108,10 @@ export async function callHarnessAgent(message: string, onThinking?: (t: string)
           ...process.env,
           LLM_API_KEY: config.llmApiKey,
           DSH_TELEMETRY_DISABLED: '1',
+          // full access：agent 需要执行 `photocraft-cli commands` 查询命令清单。
+          // dsh-base 的 approval 配置据此把 policy 从 'ask' 切成 'never'，
+          // 否则 headless 无审批通道，bash 调用会被直接拒绝。
+          DSH_PERMISSION_MODE: 'danger-full-access',
         },
       }),
       new Promise<never>((_, reject) =>

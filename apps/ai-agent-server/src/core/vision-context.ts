@@ -147,12 +147,13 @@ export async function analyzeImage(imagePath: string): Promise<VisionSummary | n
     const hit = cache.get(key)
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.summary
 
+    // 原图尺寸用于坐标换算；送模型的图会缩到长边 1024。
+    const meta = await sharp(raw).metadata()
+    const size = { w: meta.width ?? 0, h: meta.height ?? 0 }
     const buf = await sharp(raw)
       .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
       .png()
       .toBuffer()
-    const meta = await sharp(buf).metadata()
-    const size = { w: meta.width ?? 0, h: meta.height ?? 0 }
 
     const summary = await callVision(`data:image/png;base64,${buf.toString('base64')}`, size)
     if (summary) remember(key, summary)
@@ -241,10 +242,12 @@ export function renderVisionBlock(
     lines.push('')
     lines.push('## 定位命令建议')
     lines.push(
-      `- 选中主体: select.object {"point":[${cx},${cy}]}（引擎会自动贴合对象边界，优先用它）`
+      `- 矩形区域(推荐): select.rect {"x":${px(b[0], docSize.w)},"y":${px(b[1], docSize.h)},"width":${px(b[2], docSize.w) - px(b[0], docSize.w)},"height":${px(b[3], docSize.h) - px(b[1], docSize.h)}}` +
+        '（区域边界来自视觉分析，可靠；矩形会包含少量背景，通常可接受）'
     )
     lines.push(
-      `- 矩形区域: select.rect {"x":..,"y":..,"width":..,"height":..}（选不中对象或要整块区域时用）`
+      `- 精确贴合对象: select.object {"point":[${cx},${cy}]}（引擎自动找对象边界；` +
+        '但卡通/平坦区块可能只选中一小块，实测出现过 3x3 的坏结果，结果不理想时改用 select.rect）'
     )
   } else {
     lines.push('')

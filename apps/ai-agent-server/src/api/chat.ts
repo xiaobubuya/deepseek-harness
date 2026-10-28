@@ -50,9 +50,12 @@ chat.post('/', async (req: Request, res: Response) => {
       }
       if (vision) logger.info(`[Chat] 视觉摘要: 主体=${vision.subject.name}`);
 
+      // 文档尺寸：前端上报优先；否则用视觉分析时读到的原图尺寸（chat 走 analyzeImage 时有效）。
       const doc = docSize && typeof docSize.w === 'number' && typeof docSize.h === 'number'
         ? { w: docSize.w, h: docSize.h }
-        : undefined;
+        : vision && vision.size.w > 0
+          ? { w: vision.size.w, h: vision.size.h }
+          : undefined;
 
       const result = await parseInstruction(message, async (thought) => {
         if (ws) {

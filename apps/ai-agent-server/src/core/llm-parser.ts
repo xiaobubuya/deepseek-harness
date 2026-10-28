@@ -1,9 +1,14 @@
 import OpenAI from 'openai';
 import { config } from '../config.js';
+import { callHarnessAgent } from './harness-agent.js';
+import { logger } from '../utils/logger.js';
 
 /**
- * LLM 解析器
- * 调用 SenseNova API，将自然语言指令解析为 PhotoCraft CLI 命令序列
+ * 指令解析器（chat / ws 链路）
+ *
+ * 优先走 DeepSeek Harness `dsh headless --json`（支持一句话多次修改，一次产出多命令），
+ * harness 不可用或没产出命令时回退单次 LLM。命令统一以 `{cmd, params}` 形状返回，
+ * 供 `chat.ts` → `cli-executor.ts`（serve gateway）消费。
  */
 
 const SYSTEM_PROMPT = `你是一个照片编辑助手。用户用自然语言描述照片编辑需求，你将其转换为真实的 PhotoCraft 引擎命令（ID 采用 Photoshop 风格）。命令通过 photocraft-cli serve 的 engine.execute（JSON-RPC）执行，可调用完整命令注册表。
@@ -82,6 +87,21 @@ export async function parseInstruction(
   onThinking?: (thought: string) => void
 ): Promise<LLMResult> {
   onThinking?.('正在分析您的指令...');
+
+  // 优先走 harness agent（可多步规划，一句话多次修改一次产出多命令）
+  if (config.harnessEnabled) {
+    try {
+      const r = await callHarnessAgent(userMessage, onThinking);
+      if (r.commands.length) {
+        const commands = r.commands.map((c) => ({ cmd: c.id, params: c.params }));
+        onThinking?.('解析命令完成');
+        return { commands, explanation: r.explanation };
+      }
+      logger.warn('[LLM-Parser] harness 未产出命令，回退单次 LLM');
+    } catch (e) {
+      logger.warn(`[LLM-Parser] harness 失败，回退单次 LLM: ${(e as Error).message}`);
+    }
+  }
 
   const completion = await openai.chat.completions.create({
     model: config.llmModel,

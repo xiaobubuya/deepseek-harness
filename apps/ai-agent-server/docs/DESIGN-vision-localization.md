@@ -368,3 +368,126 @@ callHarnessAgent(message, { imagePath?: string })
 | `select.object {point:[50,50]}` | ✅ `bounds:[31,46,38,28]` |
 | `select.object` + `revealSelection` | ✅ 输出 bounds 同步，8090B → 1467B |
 | sharp 可用性 | ✅ v8.15.3 |
+
+---
+
+# 前端取图：直接用当前工作区画布
+
+> 决定：对话与解析都用**当前工作区的画布**作为视觉输入，用户无需额外上传或截图。
+
+## F.1 可行性（已确认）
+
+`ai-widget.js` 已经在直接访问画布像素：
+
+```js
+const canvas = editorType === 'photocraft'
+  ? document.getElementById('photocraft_canvas')
+  : document.getElementById('lightcraft_canvas');
+const ctx = canvas.getContext('2d');
+const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);  // 已被使用
+```
+
+既然能 `getImageData`，就能 `toDataURL`。**不需要引擎导出命令**——
+`layer.quickExportAsPng` / `layer.exportAs` 都要求 `path` 文件路径，
+浏览器 wasm 环境没有文件系统，反而绕远。
+
+## F.2 取图实现（前端）
+
+```js
+function grabWorkCanvas(maxEdge = 1024) {
+  const canvas = editorType === 'photocraft'
+    ? document.getElementById('photocraft_canvas')
+    : document.getElementById('lightcraft_canvas');
+  if (!canvas || !canvas.width || !canvas.height) return null;
+
+  // 缩放，避免几 MB 的 base64
+  const scale = Math.min(1, maxEdge / Math.max(canvas.width, canvas.height));
+  const w = Math.max(1, Math.round(canvas.width * scale));
+  const h = Math.max(1, Math.round(canvas.height * scale));
+
+  const tmp = document.createElement('canvas');
+  tmp.width = w; tmp.height = h;
+  try {
+    tmp.getContext('2d').drawImage(canvas, 0, 0, w, h);
+    return { dataUrl: tmp.toDataURL('image/png'), width: w, height: h, scale };
+  } catch (e) {
+    // canvas tainted（跨域图片）：退回原始上传文件
+    console.warn('[AI Widget] 画布被跨域污染，改用原始文件:', e.message);
+    return null;
+  }
+}
+```
+
+**taint 兜底**：`getImageData`/`toDataURL` 对跨域图片会抛 `SecurityError`。
+本地文件加载的图片不受影响；若真被污染，退回用户上传的原始文件 byte。
+
+## F.3 接口变更
+
+### `/api/parse` 新增可选字段
+
+```jsonc
+POST /api/parse
+{
+  "message": "把主体调成黑白",
+  "tool": "photocraft",
+  "imageBase64": "data:image/png;base64,..."   // 新增，可选
+}
+```
+
+- 有 `imageBase64` → 做 vision 摘要 → 注入 task（L2 可用）
+- 无 → 走现有纯文本路径（行为不变，向后兼容）
+
+### `/api/chat` 同样支持
+
+`chat` 目前传 `imageFilename`（服务端 uploads 有原图）。新增可选 `imageBase64`：
+
+| 传了 | vision 用哪张 |
+|---|---|
+| `imageBase64` | 优先用它（当前画布状态） |
+| 仅 `imageFilename` | 服务端读 uploads 原图 |
+| 都没传 | 不做 vision（现状） |
+
+## F.4 后端处理
+
+```ts
+// /api/parse 与 /api/chat 共用
+const vision = req.body.imageBase64
+  ? await analyzeImageBase64(req.body.imageBase64)   // 新增：直接从 base64 分析
+  : req.body.imageFilename
+    ? await analyzeImage(getImagePath(req.body.imageFilename))  // 读磁盘
+    : null
+```
+
+`analyzeImageBase64()` 与 `analyzeImage()` 共用同一段 vision 调用，
+区别只在「先 sharp 缩图」这一步（base64 已由前端缩放，可跳过）。
+
+## F.5 体积与限制
+
+| 项 | 值 |
+|---|---|
+| express json limit | 已是 **50mb**（`express.json({ limit: '50mb' })`） |
+| 前端缩放上限 | 长边 1024（约 100~300KB base64） |
+| 传输方式 | JSON body 内 base64（不落盘） |
+
+## F.6 坐标换算要对齐画布与文档尺寸
+
+画布可能被显示缩放，**不能直接拿 canvas.width 当文档尺寸**：
+
+- 视觉摘要给的是相对坐标（0..1），与像素尺寸无关——**天然对齐**。
+- 换算成像素时用**文档真实尺寸**（`photocraft-cli info` 或前端引擎查询），
+  不是 `canvas.width`。
+
+前端若已知文档尺寸，可一并上报：
+
+```jsonc
+{ "imageBase64": "...", "docSize": { "w": 1024, "h": 768 } }
+```
+
+后端优先用 `docSize`；缺失时再查引擎。
+
+## F.7 验证方法（前端部分）
+
+1. 打开一张本地图片 → 调用 `grabWorkCanvas()` → 断言返回 dataUrl 且长度合理。
+2. 打开一张跨域图片 → 断言不抛未捕获异常，退回 null。
+3. 发 `/api/parse` 带 `imageBase64` → 断言返回的命令含 `select.object` 或 `select.rect`。
+4. 不带 `imageBase64` → 断言行为与现状完全一致。

@@ -122,6 +122,8 @@ jobs:
           API_KEY="${API_KEY}"
           [ -z "$API_KEY" ] && API_KEY="muyaya-secret-key-2026"
           LLM_API_KEY="${LLM_API_KEY}"
+          # PhotoCraft serve gateway token 复用服务器现有文件（tar 解包不覆盖它）
+          PHOTOCRAFT_SERVE_TOKEN="$(cat /opt/ai-agent-server/photocraft-serve.token 2>/dev/null || echo '')"
 
           printf '%s\n' \
             "PORT=3000" \
@@ -138,6 +140,10 @@ jobs:
             "PHOTOCRAFT_CLI=/usr/local/bin/photocraft-cli" \
             "HARNESS_CLI=/usr/local/bin/dsh" \
             "HARNESS_ENABLED=true" \
+            "PHOTOCRAFT_SERVE_PORT=7878" \
+            "PHOTOCRAFT_SERVE_TOKEN=$PHOTOCRAFT_SERVE_TOKEN" \
+            "PHOTOCRAFT_SERVE_ROOT=/opt/ai-agent-server" \
+            "PHOTOCRAFT_SERVE_BIN=/usr/local/bin/photocraft-cli-real" \
             "DEEPSEEK_API_KEY=$LLM_API_KEY" \
             "TASK_TIMEOUT=60000" \
             > .env

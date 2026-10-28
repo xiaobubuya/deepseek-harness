@@ -34,19 +34,6 @@ jobs:
         working-directory: apps/ai-agent-server
         run: pnpm run build
 
-      - name: Install DeepSeek Harness
-        run: |
-          mkdir -p /tmp/harness
-          cd /tmp/harness
-          npm init -y
-          npm install @deepseek-ai/dsh
-          # Resolve actual dsh entry point
-          DSH_BIN=$(readlink -f node_modules/.bin/dsh)
-          echo "DSH actual binary: $DSH_BIN"
-          echo "DSH bin resolved"
-          # Copy the full harness installation
-          cp -r node_modules /tmp/harness-deps
-
       - name: Package
         run: |
           mkdir -p /tmp/package
@@ -54,8 +41,8 @@ jobs:
           cp apps/ai-agent-server/package.json /tmp/package/
           cp apps/ai-agent-server/ecosystem.config.cjs /tmp/package/
           cp apps/ai-agent-server/.env.example /tmp/package/
-          # Bundle Harness
-          cp -r /tmp/harness-deps /tmp/package/harness
+          # 不再打包上传 harness：服务器 /opt/ai-agent-server/harness 已有 dsh
+          # （161MB 大包经国内服务器 scp 会半开挂死，且业务代码仅 332KB）
           cd /tmp/package
           tar czf /tmp/ai-agent-server.tar.gz .
           echo "Artifact size: $(du -h /tmp/ai-agent-server.tar.gz)"
@@ -90,11 +77,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
 
-          sshpass -e scp -o StrictHostKeyChecking=no \
+          # 保活参数 + 超时：国内到服务器链路易半开，不加会挂死数小时
+          SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ConnectTimeout=30"
+
+          sshpass -e scp $SSH_OPTS \
             /tmp/ai-agent-server.tar.gz \
             "${SERVER_USER}@${SERVER_HOST}:/opt/ai-agent-server/"
 
-          sshpass -e ssh -o StrictHostKeyChecking=no \
+          sshpass -e ssh $SSH_OPTS \
             "${SERVER_USER}@${SERVER_HOST}" << 'REMOTE_SCRIPT'
           set -e
           cd /opt/ai-agent-server

@@ -1,8 +1,20 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import path from 'path';
 import { config } from '../config.js';
+import { logger } from '../utils/logger.js';
+import { serveClient } from './photocraft-serve.js';
 
-const execFileAsync = promisify(execFile);
+/**
+ * PhotoCraft command execution via the real Rust `photocraft-cli serve` gateway.
+ *
+ * The old Node+sharp shell (`cli/photocraft-cli.mjs`) only knew 18 invented
+ * commands and spawned a fresh process per command. This executor instead keeps
+ * one headless PhotoCraft session open on `photocraft-cli serve --port <port>`
+ * and runs every command through `engine.execute`, so the *full* engine command
+ * registry (currently ~920 commands) is available and the agent/harness output is
+ * applied to the same document before one export back to the web client.
+ *
+ * Flow: doc.open(input) → engine.execute(cmd, params)… → doc.save(path) → doc.close.
+ */
 
 export interface ExecutionProgress {
   step: number;
@@ -25,114 +37,21 @@ export interface ExecutionCallbacks {
 }
 
 /**
- * 命令白名单
+ * Path (relative to the automation write root /opt/ai-agent-server) under which the
+ * server stores the exported result and serves it back at /processed/<file>.
  */
-const ALLOWED_COMMANDS = new Set([
-  'color.temperature',
-  'color.saturation',
-  'color.brightness',
-  'color.contrast',
-  'color.hue',
-  'color.exposure',
-  'filter.warm',
-  'filter.cool',
-  'filter.blackwhite',
-  'filter.sepia',
-  'filter.vintage',
-  'sharpen',
-  'denoise',
-  'blur',
-  'vignette',
-  'grain',
-  'resize',
-  'crop',
-  'rotate',
-  'flip',
-]);
-
-/**
- * 验证命令
- */
-export function validateCommand(cmd: string, params: Record<string, unknown>): string | null {
-  if (!ALLOWED_COMMANDS.has(cmd)) {
-    return `不支持的命令: ${cmd}`;
-  }
-
-  // 检查危险字符
-  const jsonString = JSON.stringify(params);
-  const dangerousChars = [';', '|', '&', '$', '`', '\n', '\r'];
-  for (const char of dangerousChars) {
-    if (jsonString.includes(char)) {
-      return `参数包含危险字符: ${char}`;
-    }
-  }
-
-  return null;
+function resultPath(inputPath: string, index: number): string {
+  const base = path.basename(inputPath).replace(/\.(png|webp)$/i, '');
+  const ext = path.extname(inputPath).toLowerCase() || '.png';
+  // Serve writes under /opt/ai-agent-server/processed. Preserve the input format
+  // when the engine can re-encode it losslessly; PNG/WebP stay as-is, others become PNG.
+  const finalExt = ['.png', '.webp'].includes(ext) ? ext : '.png';
+  return `processed/${base}_result${index}.${finalExt.replace(/^\./, '')}`;
 }
 
 /**
- * 构建 CLI 参数
- */
-function buildCLIArgs(
-  command: { cmd: string; params: Record<string, unknown> },
-  inputPath: string,
-  outputPath: string
-): string[] {
-  return [
-    'run',
-    inputPath,
-    '--cmd',
-    command.cmd,
-    '--params',
-    JSON.stringify(command.params),
-    '--out',
-    outputPath,
-  ];
-}
-
-/**
- * 执行单个命令
- */
-async function executeCommand(
-  command: { cmd: string; params: Record<string, unknown> },
-  inputPath: string,
-  outputPath: string,
-  callbacks: ExecutionCallbacks
-): Promise<ExecutionResult> {
-  const args = buildCLIArgs(command, inputPath, outputPath);
-
-  try {
-    const result = await Promise.race([
-      execFileAsync(config.photocraftCli, args, { timeout: config.taskTimeout }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`命令超时 (${config.taskTimeout}ms)`)), config.taskTimeout)
-      ),
-    ]);
-
-    if (result.stdout) {
-      callbacks.onLog?.(result.stdout.trim());
-    }
-
-    return {
-      status: 'success',
-      outputPath,
-      logs: result.stdout ? [result.stdout.trim()] : [],
-    };
-  } catch (error: unknown) {
-    const err = error as { message: string; stderr?: string; stdout?: string };
-    const errorMessage = err.stderr || err.message;
-
-    return {
-      status: 'error',
-      outputPath: inputPath,
-      logs: err.stdout ? [err.stdout.trim()] : [],
-      error: errorMessage,
-    };
-  }
-}
-
-/**
- * 执行命令序列
+ * Apply an ordered list of agent/harness commands to one image through the
+ * `photocraft-cli serve` gateway (full registered command registry, not a whitelist).
  */
 export async function executeCommands(
   commands: { cmd: string; params: Record<string, unknown> }[],
@@ -140,61 +59,76 @@ export async function executeCommands(
   callbacks: ExecutionCallbacks = {}
 ): Promise<ExecutionResult> {
   const logs: string[] = [];
+  const log = (s: string): void => {
+    logs.push(s);
+    callbacks.onLog?.(s);
+  };
 
-  for (let i = 0; i < commands.length; i++) {
-    const command = commands[i];
-
-    // 验证命令
-    const validationError = validateCommand(command.cmd, command.params);
-    if (validationError) {
-      return {
-        status: 'error',
-        outputPath: imagePath,
-        logs,
-        error: validationError,
-      };
-    }
-
-    // 发送进度
-    callbacks.onProgress?.({
-      step: i + 1,
-      total: commands.length,
-      message: `正在执行: ${command.cmd}`,
-      command: command.cmd,
-      params: command.params,
-    });
-
-    // 构建输出路径
-    const ext = imagePath.split('.').pop() || 'jpg';
-    const outputPath =
-      i < commands.length - 1
-        ? imagePath.replace(/\.[^.]+$/, `_${i + 1}.${ext}`)
-        : imagePath.replace(/\.[^.]+$/, `_result.${ext}`);
-
-    // 执行命令
-    const result = await executeCommand(command, imagePath, outputPath, {
-      onLog: (log) => {
-        logs.push(log);
-        callbacks.onLog?.(log);
-      },
-    });
-
-    if (result.status === 'error') {
-      return {
-        status: 'error',
-        outputPath: imagePath,
-        logs,
-        error: `步骤 ${i + 1} 失败: ${result.error}`,
-      };
-    }
-
-    // 更新输入路径为输出路径
-    imagePath = result.outputPath;
+  // Path as seen by the serve gateway (root = /opt/ai-agent-server). The input lives in
+  // uploads/, resolved to a root-relative path for doc.open.
+  let relInput = imagePath;
+  if (path.isAbsolute(imagePath)) {
+    relInput = imagePath.replace(/^\/opt\/ai-agent-server\/?/, '');
   }
 
-  return {
-    status: 'success',
-    outputPath: imagePath,
-    logs,
-  };
+  try {
+    await serveClient.connect();
+    log('Connected to photocraft-cli serve gateway');
+
+    // 1. Open the source document in the headless session.
+    const opened = (await serveClient.open(relInput)) as { width?: number; height?: number; name?: string };
+    log(`Opened ${opened?.name || relInput} (${opened?.width ?? '?'}×${opened?.height ?? '?'})`);
+
+    // 2. Run every command through engine.execute (validates against the real registry).
+    for (let i = 0; i < commands.length; i++) {
+      const command = commands[i];
+      callbacks.onProgress?.({
+        step: i + 1,
+        total: commands.length,
+        message: `正在执行: ${command.cmd}`,
+        command: command.cmd,
+        params: command.params,
+      });
+      log(`→ ${command.cmd} ${JSON.stringify(command.params ?? {})}`);
+      await serveClient.execute(command.cmd, command.params ?? {});
+      log(`✓ ${command.cmd}`);
+    }
+
+    // 3. Export the edited document back to processed/ for the web client.
+    const outRel = resultPath(imagePath, Date.now() % 1000);
+    await serveClient.save(outRel);
+    log(`Saved ${outRel}`);
+
+    // Close this document so the session is ready for the next request.
+    try {
+      await serveClient.close();
+    } catch {
+      /* no active doc is fine */
+    }
+
+    const outputPath = path.join(config.processedDir, path.basename(outRel));
+    logger.info(`photocraft-cli serve: ${commands.length} command(s) applied → ${outputPath}`);
+    return { status: 'success', outputPath, logs };
+  } catch (err: unknown) {
+    const e = err as Error;
+    logger.error('photocraft-cli serve execution failed', e);
+    const errorMessage = e.message;
+    // Best effort: leave the session usable for the next request.
+    try {
+      await serveClient.close();
+    } catch {
+      /* ignore */
+    }
+    return { status: 'error', outputPath: imagePath, logs, error: errorMessage };
+  }
+}
+
+/**
+ * Legacy whitelist validator. With the serve gateway the *real* engine registry is
+ * authoritative and rejects unknown commands itself, so this is kept only as a
+ * compatibility no-op that always permits (validation happens server-side). Kept so
+ * `chat.ts`'s call site still compiles and produces clear serve-sourced errors.
+ */
+export function validateCommand(_cmd: string, _params: Record<string, unknown>): string | null {
+  return null;
 }

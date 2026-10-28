@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { authMiddleware } from './auth.js';
 import { chat } from './api/chat.js';
 import { upload } from './api/upload.js';
+import { parse } from './api/parse.js';
 import { createWebSocketServer } from './websocket/manager.js';
 import { logger, initLogger } from './utils/logger.js';
 import { initStorage, startCleanupScheduler, listImages } from './utils/file-manager.js';
@@ -42,6 +43,7 @@ async function main() {
   // API 路由（需要鉴权）
   app.use('/api/chat', authMiddleware, chat);
   app.use('/api/upload', authMiddleware, upload);
+  app.use('/api/parse', authMiddleware, parse);
 
   // 图片列表（无需鉴权，用于前端展示）
   app.get('/api/images', async (_req, res) => {

@@ -137,6 +137,7 @@ jobs:
             "TEMP_DIR=/opt/ai-agent-server/temp" \
             "PHOTOCRAFT_CLI=/usr/local/bin/photocraft-cli" \
             "HARNESS_CLI=/usr/local/bin/dsh" \
+            "HARNESS_ENABLED=true" \
             "DEEPSEEK_API_KEY=$LLM_API_KEY" \
             "TASK_TIMEOUT=60000" \
             > .env

@@ -194,3 +194,177 @@ L3 的坐标精度受 vision 限制，应明确告知用户「可能需手动微
 - 是否给 `/api/parse` 也加图片（需前端配合截图上传）。
 - L3 精细路径是否值得做，还是只做到 L2（区域级）+ 提示用户手动精修。
 - 是否缓存视觉摘要（按图片 hash）。
+
+---
+
+# L2 区域级编辑：详细实现方案
+
+> 本章是 5.4 中 L2 的落地设计，所有关键结论均已实测（见「实测记录」）。
+
+## L2.1 图片怎么给模型：base64（URL 不可行）
+
+**结论：只能用 base64 data URL，不能传 http URL。**
+
+实测（同一模型 `sensenova-6.8-flash-lite`）：
+
+| 传法 | 结果 |
+|---|---|
+| `data:image/png;base64,...` | **HTTP 200**，正确识别内容 |
+| `https://picsum.photos/...`（公网 URL） | **HTTP 400** `inference request is invalid` |
+| 大图 base64（1.69MB 原图 → 2.25MB base64） | **HTTP 200**，`prompt_tokens=471` |
+
+所以「图片存起来给 URL」这条路走不通——网关不替我们拉取外部 URL。
+
+### 为什么不用 URL（即使我们服务器已暴露静态目录）
+
+`/uploads` 确实通过 `express.static` 暴露（`GET /uploads/x.png → 200`），
+服务器也监听 `*:3000`。但模型侧不接受 URL，这个能力用不上。
+**保留 URL 的价值仅在于前端预览，不用于 vision 输入。**
+
+### base64 的体积控制
+
+原图最大已见 1.69MB → base64 2.25MB，网关能接受，但每轮传输偏重。
+做法：**先用 sharp 缩到长边 1024 再 base64**（实测 sharp v8.15.3 可用），
+典型 100KB~300KB，`prompt_tokens` 仍是数百量级。
+
+```ts
+import sharp from 'sharp'
+
+async function toVisionDataUrl(file: string, maxEdge = 1024): Promise<string> {
+  const buf = await sharp(file)
+    .resize({ width: maxEdge, height: maxEdge, fit: 'inside', withoutEnlargement: true })
+    .png()
+    .toBuffer()
+  return `data:image/png;base64,${buf.toString('base64')}`
+}
+```
+
+## L2.2 vision 调用要点（实测踩坑）
+
+1. **`max_tokens` 必须给足**：该模型会把推理写进 `reasoning`；给 300 时
+   `finish_reason=length` 且 `content` 为空。给 1500 时 `finish_reason=stop`，
+   `content` 是干净 JSON。
+2. **取 `message.content`**；为空时再从 `message.reasoning` 里提取 JSON（兜底）。
+3. 要求「只输出 JSON」，实测返回：
+   ```json
+   {"subject":{"name":"pig","point":[0.5,0.5],"bbox":[0.03,0.03,0.97,0.97]}}
+   ```
+
+## L2.3 数据流
+
+```
+POST /api/chat {message, imageFilename}
+  ↓
+1) 取原图绝对路径（uploads/）
+2) sharp 缩图 → base64 data URL
+3) vision 调用 → VisionSummary {size, subject{point,bbox}, regions[]}
+4) 相对坐标 × 尺寸 → 像素坐标
+5) 拼进 task（图片摘要段）→ callHarnessAgent
+6) agent 生成命令：
+     select.object {point:[px,py]}     ← 首选：引擎自动找对象边界
+     select.rect {x,y,width,height}    ← 保底
+     + 后续命令（调色 / 蒙版 / 删除填充）
+7) 走现有 cli-executor 执行并保存
+```
+
+## L2.4 命令选择策略
+
+| 场景 | 首选 | 理由 |
+|---|---|---|
+| 主体明确（一个人/一只动物/一个物体） | `select.object {point}` | 实测 `point:[50,50]` 返回 `bounds:[31,46,38,28]`，精准命中对象 |
+| 区域/背景（天空、地面） | `select.rect {x,y,width,height}` | 对象选择器不认「区域」概念 |
+| 多对象 | 多次 `select.object` + `mode:"add"` | 参数支持 add/subtract/intersect |
+
+**`select.object` 的实测结果（关键依据）**：
+
+```bash
+photocraft-cli run uploads/x.png --cmd select.object --params '{"point":[50,50]}'
+# → {"bounds":[31,46,38,28],"changed":true,"selected":true}
+
+# 接蒙版：
+photocraft-cli run uploads/x.png \
+  --cmd select.object --params '{"point":[50,50]}' \
+  --cmd layer.layerMask.revealSelection \
+  --out /tmp/obj-mask.png
+# → 输出图层 bounds 同步为 [31,46,38,28]，文件 8090B → 1467B
+```
+
+注意：PNG 保存会压平图层与蒙版（`warning: 1 layer(s) flattened`），
+**视觉结果正确**；需要保留图层结构时输出 `.pcraft`/`.psd`。
+
+## L2.5 代码骨架
+
+```ts
+// src/core/vision-context.ts
+export interface VisionSummary {
+  size: { w: number; h: number }
+  subject: { name: string; point: [number, number]; bbox: [number, number, number, number] }
+  regions: Array<{ name: string; bbox: [number, number, number, number] }>
+}
+
+export async function analyzeImage(imagePath: string): Promise<VisionSummary | null>
+// 内部：sharp 缩图 → base64 → chat.completions（content 优先，reasoning 兜底）
+//      → JSON.parse → 校验（point 在 0..1、bbox 合法）；任何一步失败返回 null
+```
+
+```ts
+// src/core/harness-agent.ts —— 增加可选入参
+callHarnessAgent(message, { imagePath?: string })
+// 若 imagePath 且 analyzeImage 成功：
+//   task 追加：
+//   ## 图片信息（视觉分析）
+//   - 尺寸: 1024x768
+//   - 主体: pig，中心像素 (512,384)，范围 x 30..994, y 23..745
+//   - 提示：需要选区时优先用 select.object {point:[512,384]}
+//          需要矩形区域时用 select.rect {x,y,width,height}
+```
+
+**注意**：不要直接把相对坐标丢给 agent 让它自己乘——实测模型换算容易错，
+在服务端换算好后以「像素坐标」形式给出。
+
+## L2.6 缓存与成本
+
+- 按图片 `sha256` 缓存摘要（内存 LRU，TTL 24h）：同一张图多次对话只分析一次。
+- 单次成本实测：`prompt_tokens≈470`、`completion_tokens≈180`（缩图后更低）。
+- 延迟：一次 vision 调用约 3~8s，叠加在现有 harness 解析（~15s）之上。
+
+## L2.7 链路限制（重要）
+
+| 链路 | 有无图片 | 能否 L2 |
+|---|---|---|
+| `/api/chat` | 有（`imageFilename`，服务端有原图） | **可以** |
+| `/api/parse` | **无**（前端只传 `{message, tool}`） | **不可以** |
+
+所以 L2 只对 chat 生效。悬浮球（parse）里的定位类需求，
+要么引导用户走 chat，要么前端补一张画布截图（另议）。
+
+## L2.8 失败兜底
+
+| 失败点 | 兜底 |
+|---|---|
+| sharp 缩图失败 | 直接用原图 base64 |
+| vision HTTP 错误 | 不注入摘要，退化为纯文本解析（当前行为） |
+| 返回非 JSON | 从 `reasoning` 提取 JSON；仍失败则丢弃摘要 |
+| point/bbox 越界 | 裁剪到 `[0, w-1]` / 合法比例 |
+| agent 生成的 command 参数非法 | 现有 `sanitizeCommands` 兜底 |
+
+## L2.9 验证清单（实现后跑）
+
+1. `analyzeImage()` 对样例图返回合法 `VisionSummary`（含 size/subject）。
+2. chat：「把主体调成黑白」→ 断言先 `select.object` 再 `image.adjustments.blackWhite`。
+3. chat：「把天空调蓝」→ 断言 `select.rect` 覆盖上半部。
+4. 端到端：执行后 `photocraft-cli info` 确认图层 bounds ≈ 目标区域、文件大小变化合理。
+5. 回归：无图片的纯文字需求行为不变；vision 失败时仍能出旧结果。
+
+## L2.10 实测记录汇总
+
+| 验证项 | 结果 |
+|---|---|
+| base64 data URL | ✅ 200，正确识图 |
+| http URL | ❌ 400 `inference request is invalid` |
+| 大图 base64（2.25MB） | ✅ 200，`prompt_tokens=471` |
+| `max_tokens=300` | ❌ `finish_reason=length`，`content` 空 |
+| `max_tokens=1500` | ✅ `finish_reason=stop`，`content` 为干净 JSON |
+| `select.object {point:[50,50]}` | ✅ `bounds:[31,46,38,28]` |
+| `select.object` + `revealSelection` | ✅ 输出 bounds 同步，8090B → 1467B |
+| sharp 可用性 | ✅ v8.15.3 |

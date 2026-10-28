@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { PHOTOCRAFT_COMMANDS, PHOTOCRAFT_SYSTEM_PROMPT, type ParamSpec } from '../core/photocraft-prompts.js'
 import { getEngineCommandIds } from '../core/engine-commands.js'
+import { analyzeImageBase64 } from '../core/vision-context.js'
 import { config } from '../config.js'
 import { logger } from '../utils/logger.js'
 import { callHarnessAgent } from '../core/harness-agent.js'
@@ -126,7 +127,7 @@ function envSource(): 'harness' | 'llm' {
  * 前端直接 `window.execute_command(id, JSON.stringify(params))`，不再做二次映射。
  */
 parse.post('/', async (req: Request, res: Response) => {
-  const { message, tool } = req.body
+  const { message, tool, imageBase64, docSize } = req.body
   const cliTool = tool === 'lightcraft' ? 'lightcraft' : 'photocraft'
 
   if (!message) {
@@ -139,11 +140,24 @@ parse.post('/', async (req: Request, res: Response) => {
   try {
     logger.info(`[Parse] (${cliTool}, ${source}) ${String(message).slice(0, 80)}`)
 
+    // 0. 前端带来的当前画布（可选）：做视觉分析，供定位类命令使用
+    let vision: Awaited<ReturnType<typeof analyzeImageBase64>> = null
+    if (typeof imageBase64 === 'string' && imageBase64.startsWith('data:image/')) {
+      vision = await analyzeImageBase64(imageBase64)
+      if (vision) logger.info(`[Parse] 视觉摘要: 主体=${vision.subject.name}`)
+    }
+    const doc = docSize && typeof docSize.w === 'number' && typeof docSize.h === 'number'
+      ? { w: docSize.w, h: docSize.h }
+      : undefined
+
     // 1. 优先走 harness agent（可多步规划，一句话多次修改一次生成一组命令）
     let parsed: { commands?: unknown; explanation?: string } | undefined
     if (source === 'harness') {
       try {
-        const r = await callHarnessAgent(String(message))
+        const r = await callHarnessAgent(String(message), undefined, {
+          vision: vision ?? undefined,
+          docSize: doc,
+        })
         parsed = { commands: r.commands, explanation: r.explanation }
         logger.info(`[Harness] 生成 ${r.commands.length} 条命令`)
       } catch (e) {

@@ -18,6 +18,7 @@ import { join } from 'path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { PHOTOCRAFT_AGENT_PROMPT } from './photocraft-prompts.js';
+import { renderVisionBlock, type VisionSummary } from './vision-context.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -77,22 +78,37 @@ function renderPatch(): string {
   ].join('\n');
 }
 
+/** 传给 harness agent 的可选上下文。 */
+export interface HarnessOptions {
+  /** 视觉分析摘要：让 agent 知道画面里有什么、在哪个区域，用于生成定位类命令。 */
+  vision?: VisionSummary
+  /** 文档真实像素尺寸，用于把相对坐标换算成像素。 */
+  docSize?: { w: number; h: number }
+}
+
 /**
  * 调 Harness headless 生成 PhotoCraft 命令。
  * @param message 用户自然语言指令
  * @param onThinking 过程回调（可选）
+ * @param options 视觉摘要等可选上下文
  */
-export async function callHarnessAgent(message: string, onThinking?: (t: string) => void): Promise<HarnessParseResult> {
+export async function callHarnessAgent(
+  message: string,
+  onThinking?: (t: string) => void,
+  options?: HarnessOptions
+): Promise<HarnessParseResult> {
   onThinking?.('Harness agent 正在分析指令...');
   logger.info('[Harness] 开始解析指令(单次调用，支持多步规划)');
 
   // 任务正文：不带硬编码命令清单，要求 agent 用 photocraft-cli commands 自行按需查询
   // 引擎的 920 个真实命令（全量塞 prompt 约 25K tokens，不现实）。
-  const task = [
-    PHOTOCRAFT_AGENT_PROMPT,
-    '',
-    `用户需求：${message}`,
-  ].join('\n');
+  const parts = [PHOTOCRAFT_AGENT_PROMPT, ''];
+  if (options?.vision) {
+    parts.push(renderVisionBlock(options.vision, options.docSize), '');
+    logger.info(`[Harness] 已注入视觉摘要（主体: ${options.vision.subject.name}）`);
+  }
+  parts.push(`用户需求：${message}`);
+  const task = parts.join('\n');
 
   const patchPath = join(tmpdir(), `dsh-pi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.yml`);
   writeFileSync(patchPath, renderPatch(), 'utf-8');

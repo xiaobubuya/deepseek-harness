@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { parseInstruction } from '../core/llm-parser.js';
 import { executeCommands, validateCommand } from '../core/cli-executor.js';
 import { getImagePath } from '../utils/file-manager.js';
+import { analyzeImage, analyzeImageBase64 } from '../core/vision-context.js';
 import { logger } from '../utils/logger.js';
 import { websocketManager } from '../websocket/manager.js';
 
@@ -12,7 +13,7 @@ const chat = Router();
  * POST /api/chat - 接收用户指令
  */
 chat.post('/', async (req: Request, res: Response) => {
-  const { message, imageId, imageFilename } = req.body;
+  const { message, imageId, imageFilename, imageBase64, docSize } = req.body;
 
   if (!message) {
     res.status(400).json({ error: '缺少 message 字段' });
@@ -39,11 +40,25 @@ chat.post('/', async (req: Request, res: Response) => {
         await ws.send(JSON.stringify({ type: 'thinking', thought: '正在分析您的指令...' }));
       }
 
+      // 视觉分析：优先用前端带来的当前画布，其次用服务端已存的原图。
+      // 失败时返回 null，解析链路退化为纯文字（行为与改造前一致）。
+      let vision = null;
+      if (typeof imageBase64 === 'string' && imageBase64.startsWith('data:image/')) {
+        vision = await analyzeImageBase64(imageBase64);
+      } else if (imageFilename) {
+        vision = await analyzeImage(getImagePath(imageFilename));
+      }
+      if (vision) logger.info(`[Chat] 视觉摘要: 主体=${vision.subject.name}`);
+
+      const doc = docSize && typeof docSize.w === 'number' && typeof docSize.h === 'number'
+        ? { w: docSize.w, h: docSize.h }
+        : undefined;
+
       const result = await parseInstruction(message, async (thought) => {
         if (ws) {
           await ws.send(JSON.stringify({ type: 'thinking', thought }));
         }
-      });
+      }, { vision: vision ?? undefined, docSize: doc });
 
       if (ws) {
         await ws.send(

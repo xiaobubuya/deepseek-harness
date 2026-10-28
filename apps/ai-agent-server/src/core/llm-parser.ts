@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { config } from '../config.js';
-import { callHarnessAgent } from './harness-agent.js';
+import { callHarnessAgent, type HarnessOptions } from './harness-agent.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -84,14 +84,15 @@ export interface LLMResult {
  */
 export async function parseInstruction(
   userMessage: string,
-  onThinking?: (thought: string) => void
+  onThinking?: (thought: string) => void,
+  options?: HarnessOptions
 ): Promise<LLMResult> {
   onThinking?.('正在分析您的指令...');
 
   // 优先走 harness agent（可多步规划，一句话多次修改一次产出多命令）
   if (config.harnessEnabled) {
     try {
-      const r = await callHarnessAgent(userMessage, onThinking);
+      const r = await callHarnessAgent(userMessage, onThinking, options);
       if (r.commands.length) {
         const commands = r.commands.map((c) => ({ cmd: c.id, params: c.params }));
         onThinking?.('解析命令完成');

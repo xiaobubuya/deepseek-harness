@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { config } from '../config.js';
 import { callHarnessAgent, type HarnessOptions } from './harness-agent.js';
+import { extractFirstJsonObject } from '../utils/json-extract.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -125,12 +126,12 @@ export async function parseInstruction(
  */
 function parseResponse(content: string): LLMResult {
   // 尝试提取 JSON
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  const jsonMatch = extractFirstJsonObject(content);
   if (!jsonMatch) {
     throw new Error('LLM 返回格式错误，无法解析 JSON');
   }
 
-  const parsed = JSON.parse(jsonMatch[0]);
+  const parsed = JSON.parse(jsonMatch);
 
   if (!parsed.commands || !Array.isArray(parsed.commands)) {
     throw new Error('LLM 返回格式错误，缺少 commands 字段');

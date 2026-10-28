@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import { PHOTOCRAFT_COMMANDS, PHOTOCRAFT_SYSTEM_PROMPT, type ParamSpec } from '../core/photocraft-prompts.js'
 import { getEngineCommandIds } from '../core/engine-commands.js'
 import { analyzeImageBase64 } from '../core/vision-context.js'
+import { extractFirstJsonObject } from '../utils/json-extract.js'
 import { config } from '../config.js'
 import { logger } from '../utils/logger.js'
 import { callHarnessAgent } from '../core/harness-agent.js'
@@ -105,11 +106,12 @@ async function sanitizeCommands(parsedCommands: unknown): Promise<SanitizeResult
 }
 
 /** 将模型产出的原始文本提取为 {commands, explanation}（找不到 JSON 时给空命令）。 */
+/** 从模型文本里提取第一个完整 JSON 对象（不再用贪婪正则，避免跨多个块）。 */
 function extractParsed(content: string): { commands?: unknown; explanation?: string } {
-  const jsonMatch = content.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) return {}
+  const jsonText = extractFirstJsonObject(content)
+  if (!jsonText) return {}
   try {
-    return JSON.parse(jsonMatch[0]) as { commands?: unknown; explanation?: string }
+    return JSON.parse(jsonText) as { commands?: unknown; explanation?: string }
   } catch {
     return {}
   }

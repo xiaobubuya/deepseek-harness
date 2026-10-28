@@ -19,6 +19,7 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { PHOTOCRAFT_AGENT_PROMPT } from './photocraft-prompts.js';
 import { renderVisionBlock, type VisionSummary } from './vision-context.js';
+import { extractFirstJsonObject } from '../utils/json-extract.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -138,12 +139,12 @@ export async function callHarnessAgent(
     logger.info('[Harness] agent 完成');
     const text = parseHarnessOutput(result.stdout);
 
-    // 从 text 里提取 JSON（agent 可能带少量前后文）。
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    // 从 text 里提取第一个完整 JSON 对象（括号平衡，避免贪婪匹配跨多个块）。
+    const jsonText = extractFirstJsonObject(text);
     let parsed: { commands?: unknown; explanation?: string } = {};
-    if (jsonMatch) {
+    if (jsonText) {
       try {
-        parsed = JSON.parse(jsonMatch[0]);
+        parsed = JSON.parse(jsonText);
       } catch {
         logger.warn('[Harness] final 不是合法 JSON，按空命令处理');
       }

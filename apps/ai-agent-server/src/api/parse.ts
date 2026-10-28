@@ -94,12 +94,9 @@ async function sanitizeCommands(parsedCommands: unknown): Promise<SanitizeResult
       }
     }
 
-    // 需要参数的调整，参数全丢光就没意义（invert 之类本来就无参数）。
-    if (Object.keys(spec).length > 0 && Object.keys(params).length === 0) {
-      rejected.push(`${id}(参数无效)`)
-      continue
-    }
-
+    // 不因「参数为空」丢弃：引擎命令的参数基本都有默认值
+    // （如 blackWhite 的 reds/yellows...、brightnessContrast 的 brightness=0），
+    // 省略参数是合法的；真缺必填项时由引擎执行阶段报错，不该在这里静默丢弃。
     valid.push({ id, params })
   }
 
